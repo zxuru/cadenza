@@ -38,7 +38,9 @@ exclude = [
     "build",
     "packaging",
     "BUILD.md",
+    "README.md",
     "build.py",
+    "docs",
     "pyproject.toml",
     "requirements.txt",
 ]
