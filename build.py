@@ -366,11 +366,20 @@ def artifact_path() -> Path:
     return exe
 
 
+def archive_entry_count(artifact: Path) -> int:
+    """How many members the executable's archive holds (a diagnostic)."""
+    from PyInstaller.archive.readers import CArchiveReader
+
+    return len(CArchiveReader(str(artifact)).toc)
+
+
 def missing_payloads(artifact: Path, client_artifact: str) -> list[str]:
     """Names of bundled payloads absent from the executable's archive."""
     from PyInstaller.archive.readers import CArchiveReader
 
-    names = set(CArchiveReader(str(artifact)).toc)
+    # The archive keeps whatever separator the build was given, and on Windows
+    # that is a backslash: compare on one form or every name looks missing.
+    names = {name.replace("\\", "/") for name in CArchiveReader(str(artifact)).toc}
     missing = []
     if f"flet_desktop/app/{client_artifact}" not in names:
         missing.append(f"flet_desktop/app/{client_artifact}")
@@ -429,7 +438,11 @@ def main() -> int:
 
         missing = missing_payloads(artifact, client_archive.name)
         if missing:
-            print(f"error: executable is missing {', '.join(missing)}", file=sys.stderr)
+            print(
+                f"error: executable is missing {', '.join(missing)} "
+                f"(its archive holds {archive_entry_count(artifact)} entries)",
+                file=sys.stderr,
+            )
             return 1
 
         print(
