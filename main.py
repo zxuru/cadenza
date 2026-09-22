@@ -780,7 +780,9 @@ def main(page: ft.Page) -> None:
             render_update(
                 t("update_available_mobile", version=release.version), ft.Colors.BLUE_200
             )
-            render_update_action(True, release.page)
+            # The APK built for this phone's ABI, or the release page when the
+            # release has none for it.
+            render_update_action(True, update.download_url(release))
             safe_update()
             return
 

@@ -183,19 +183,25 @@ jobs:
       # The APK carries the same version stamp the desktop builds do, and tells
       # Android about it: `versionCode` is what makes an install over the old
       # one an upgrade rather than a refusal.
-      - name: Build APK
+      #
+      # `--split-per-abi` writes one APK per architecture instead of one fat
+      # package: the three sets of native libraries (Flutter's, Python's, and
+      # ffmpeg's) are what the fat APK is made of, so a phone downloads the ~110
+      # MB that fit it instead of 230 MB of which two thirds never run.
+      - name: Build APKs
         run: |
           python version.py --stamp "${{ needs.version.outputs.version }}"
-          flet build apk --yes \
+          flet build apk --yes --split-per-abi \
             --build-version "${{ needs.version.outputs.version }}" \
             --build-number "${{ needs.version.outputs.build }}"
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          # The copy `flet build` leaves in build/apk, not the Gradle output it
-          # was copied from: both match `build/**/*.apk`, and shipping the same
-          # 230 MB file twice helps nobody.
+          # `flet build` names them `cadenza-<abi>.apk`, which is what the
+          # updater looks for. The copies in build/apk, not the Gradle output
+          # they were copied from: both match `build/**/*.apk`, and shipping
+          # the same files twice helps nobody.
           path: build/apk/*.apk
           if-no-files-found: error
 

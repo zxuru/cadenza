@@ -19,7 +19,7 @@ release](https://github.com/zxuru/cadenza/releases/latest):
 | Linux x86_64 / arm64 | `linux-<arch>.tar.gz` | `tar -xzf`, then run `./Cadenza` |
 | Windows x64 | `windows-x86_64.exe` | Run it (Windows on ARM: this build, emulated) |
 | macOS arm64 / x86_64 | `macos-<arch>.zip` | Unzip, drop `Cadenza.app` wherever you keep apps |
-| Android 7+ | `cadenza.apk` | Copy it to the phone and open it |
+| Android 7+ | `cadenza-arm64-v8a.apk` (or `cadenza-armeabi-v7a.apk` on an old 32-bit phone, `cadenza-x86_64.apk` on an emulator) | Copy it to the phone and open it |
 
 | Platform | Requirement |
 | --- | --- |
@@ -27,7 +27,7 @@ release](https://github.com/zxuru/cadenza/releases/latest):
 | Windows | 64-bit Windows 10 or 11 |
 | macOS | macOS 12 or newer, Intel or Apple silicon |
 | Android | Android 7 or newer, `arm64-v8a`, `armeabi-v7a` or `x86_64` |
-| Any | ~130 MB of disk (the APK is ~230 MB) and a network connection |
+| Any | ~70 MB of disk (~91 MB for an APK) and a network connection |
 
 Nothing else is needed: no Python, no ffmpeg, no `PATH` entries, no admin
 rights. The first launch takes a few extra seconds, when the Flet client is
@@ -97,9 +97,10 @@ install an APK from inside itself.
 ## How it works
 
 [youtube-dl's successor](https://github.com/yt-dlp/yt-dlp) does the extraction,
-with a bundled Deno as the JavaScript runtime it needs to solve YouTube's
+with a bundled QuickJS as the JavaScript runtime it needs to solve YouTube's
 signature challenges; a system `deno`, `node`, `bun` or `quickjs` is used
-instead when there is one. ffmpeg (the static build from `imageio-ffmpeg`) does
+instead when there is one. QuickJS is 2.5 MB where the runtime yt-dlp enables by
+default, Deno, is 96 MB - and it solves the same challenges. ffmpeg (the static build from `imageio-ffmpeg`) does
 the conversion and the video-frame fallback for cover art. On Android, where an
 app may not execute a binary it ships, the conversion runs in-process through
 PyAV and the bundle carries ffmpeg's libraries instead. mutagen writes the tags

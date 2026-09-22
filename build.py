@@ -19,11 +19,12 @@ The payloads that need staging are:
   to download it at runtime (and fail on a machine without network access).
   We re-pack the archive from the client already cached by ``flet_desktop``,
   which keeps it identical to the one Flet itself would download.
-* **Deno**, the JavaScript runtime yt-dlp uses to solve YouTube's signature
-  challenges.  Without one the stream URLs come back unsigned and the affected
-  downloads fail with HTTP 403, so the release binary is fetched from GitHub
-  once, verified against the SHA-256 published next to it, and embedded at
-  ``jsrt/`` inside the executable.
+* **QuickJS**, the JavaScript runtime yt-dlp uses to solve YouTube's
+  signature challenges.  Without one the stream URLs come back unsigned and the
+  affected downloads fail with HTTP 403, so the release binary is fetched from
+  GitHub once, verified against a pinned SHA-256, and embedded at ``jsrt/``
+  inside the executable.  yt-dlp's default runtime is Deno, a 96 MB binary;
+  quickjs-ng is 2.5 MB and solves the same challenges.
 * **ffmpeg**, shipped inside the ``imageio_ffmpeg`` wheel.  Its PyInstaller
   hook bundles the binary and its hidden import, so the build only needs to
   stay out of the way (see ``HIDDEN_IMPORTS``).
@@ -47,7 +48,6 @@ import gzip
 import hashlib
 import os
 import platform
-import re
 import shlex
 import shutil
 import subprocess
@@ -68,49 +68,77 @@ ASSETS_DIR = PROJECT_DIR / "assets"
 LOCALES_DIR = PROJECT_DIR / "locales"
 DIST_DIR = PROJECT_DIR / "dist"
 WORK_DIR = PROJECT_DIR / "build"
+# PyInstaller hooks of our own, which override the installed ones (see the
+# directory: `flet-cli` ships a hook that would ship the Flet client twice).
+HOOKS_DIR = PROJECT_DIR / "packaging" / "pyinstaller-hooks"
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 
-# Deno release to embed (https://github.com/denoland/deno/releases).  Pinned
-# instead of "latest" so that a build is reproducible; the archive is checked
-# against the `sha256sum` GitHub publishes next to it before it is used.
-DENO_VERSION = "v2.9.7"
-DENO_RELEASE_URL = (
-    f"https://github.com/denoland/deno/releases/download/{DENO_VERSION}"
+# QuickJS release to embed (https://github.com/quickjs-ng/quickjs/releases).
+# Pinned instead of "latest" so that a build is reproducible - and so are the
+# digests below, because this project publishes no checksum file: each asset is
+# checked against the digest written down here before it is used.
+#
+# It is the JavaScript runtime yt-dlp runs YouTube's player JS in, to solve the
+# signature challenges; Deno is the runtime yt-dlp enables by default, but it is
+# a 96 MB binary where this one is 2.5 MB, and yt-dlp accepts it as the `quickjs`
+# provider. To move to a newer QuickJS, change both the version and the digests.
+QUICKJS_VERSION = "v0.17.0"
+QUICKJS_RELEASE_URL = (
+    f"https://github.com/quickjs-ng/quickjs/releases/download/{QUICKJS_VERSION}"
 )
-# Release asset per (platform, architecture).  `platform.machine()` spells the
-# architecture differently on every OS, so it is normalised first.
-DENO_ASSETS = {
-    ("linux", "x86_64"): "deno-x86_64-unknown-linux-gnu.zip",
-    ("linux", "aarch64"): "deno-aarch64-unknown-linux-gnu.zip",
-    ("win32", "x86_64"): "deno-x86_64-pc-windows-msvc.zip",
-    ("win32", "aarch64"): "deno-aarch64-pc-windows-msvc.zip",
-    ("darwin", "x86_64"): "deno-x86_64-apple-darwin.zip",
-    ("darwin", "aarch64"): "deno-aarch64-apple-darwin.zip",
+QUICKJS_ASSETS = {
+    ("linux", "x86_64"): (
+        "qjs-linux-x86_64",
+        "0bfc02511a9f549c28b53880d988fc7cd5d361e90c5e8afdfcd7dc6774ceace5",
+    ),
+    ("linux", "aarch64"): (
+        "qjs-linux-aarch64",
+        "3372133484edf50a69f3c67903af41206d22a061e930e3cfb63269272ef56d2e",
+    ),
+    ("win32", "x86_64"): (
+        "qjs-windows-x86_64.exe",
+        "2aeabf0092c3262d6b2609824418f7dd7ed1f1df939f73b2b15645230cac0d77",
+    ),
+    ("darwin", "x86_64"): (
+        "qjs-darwin-x86_64",
+        "9e5e101b4fd13cda3204222ca9f8be35412c41dcdef3745829633b7a67245412",
+    ),
+    ("darwin", "aarch64"): (
+        "qjs-darwin-arm64",
+        "8be3ddfe3397d2e692e4e1e8972ee9d032a0a580505d2f8b4ea528cf1b651c11",
+    ),
 }
-DENO_ARCHES = {
+# `platform.machine()` spells the architecture differently on every OS, so it is
+# normalised first.
+QUICKJS_ARCHES = {
     "x86_64": "x86_64",
     "amd64": "x86_64",
     "aarch64": "aarch64",
     "arm64": "aarch64",
 }
-# Directory inside the bundle the app looks for the runtime in, and the name
-# the release gives the binary on this platform.
+# Directory inside the bundle the app looks for the runtime in, and the name it
+# has there. `qjs` is also the name yt-dlp looks for, given a directory.
 JSRT_DIR = "jsrt"
-DENO_BINARY = "deno.exe" if IS_WINDOWS else "deno"
+QUICKJS_BINARY = "qjs.exe" if IS_WINDOWS else "qjs"
 # Downloads are kept here between builds: PyInstaller's `--clean` only empties
 # its own `build/<name>/` subdirectory, so this survives.
-DENO_CACHE_DIR = WORK_DIR / "deno"
+QUICKJS_CACHE_DIR = WORK_DIR / "quickjs"
 
 
 class BuildError(RuntimeError):
     """A payload could not be prepared, so the build must not go ahead."""
 
-# Packages that resolve modules at runtime (control classes looked up by name,
-# the yt-dlp extractor registry) and therefore need their submodules collected
-# wholesale instead of relying on static import analysis.
-COLLECT_ALL = ("flet", "flet_desktop", "yt_dlp")
+# Packages that resolve modules at runtime (control classes looked up by name)
+# and therefore need their submodules collected wholesale instead of relying on
+# static import analysis.
+COLLECT_ALL = ("flet", "flet_desktop")
+# yt-dlp's extractors are imported by name at runtime too, but its own
+# PyInstaller hook already collects the submodules - and `--collect-all` would
+# additionally copy the package's sources as data, 10 MB of `.py` files that
+# are compiled into the PYZ anyway.
+COLLECT_SUBMODULES = ("yt_dlp",)
 
 # `imageio_ffmpeg.binaries` holds the static ffmpeg executable and is reached
 # through `importlib.resources`, so it is never imported directly.  `mutagen`
@@ -120,7 +148,7 @@ COLLECT_ALL = ("flet", "flet_desktop", "yt_dlp")
 # while writing the cover art, and no tag lookup can be written.
 HIDDEN_IMPORTS = ("imageio_ffmpeg.binaries", "mutagen")
 
-# What a frozen desktop build never needs, left out rather than shipped:
+# What a frozen build never needs, left out rather than shipped:
 #
 # * `transcode`'s in-process converter is for a platform whose wheels carry no
 #   ffmpeg - Android - and a desktop executable always has one. PyAV and
@@ -133,7 +161,34 @@ HIDDEN_IMPORTS = ("imageio_ffmpeg.binaries", "mutagen")
 #   installed - `flet` imports those packages for its own web-server path, so
 #   a virtualenv carrying the web or cli extras builds a few MB larger than
 #   the clean one CI uses.)
-EXCLUDED_MODULES = ("av", "PIL", "flet_web")
+# * `flet.cli` and what it drags in (pygments, cookiecutter, watchdog,
+#   questionary, markdown-it) is the build tool, not the app: the desktop
+#   client never imports any of it. `flet.fastapi` and `flet.testing` are the
+#   web and test paths for the same reason, and httpx/oauthlib come in behind
+#   flet's own tooling.
+#
+# `rich` is *not* on that list, tempting as it looks: `flet_desktop` imports
+# `rich.progress` in its own `__init__` to draw the client download bar, so a
+# build without it starts, fails to import the client, and then asks the user to
+# `pip install flet-desktop`. Only `rich.syntax` and `rich.traceback` reach for
+# pygments, both lazily, and neither is on that path.
+EXCLUDED_MODULES = (
+    "av",
+    "PIL",
+    "flet_web",
+    "flet.cli",
+    "flet.fastapi",
+    "flet.testing",
+    "flet.pytest_plugin",
+    "pygments",
+    "markdown_it",
+    "cookiecutter",
+    "watchdog",
+    "questionary",
+    "httpx",
+    "httpcore",
+    "oauthlib",
+)
 
 
 def stamp_version() -> str:
@@ -149,7 +204,7 @@ def stamp_version() -> str:
 
 
 def pyinstaller_args(
-    client_archive: Path, client_sidecar: Path, deno_binary: Path
+    client_archive: Path, client_sidecar: Path, js_runtime: Path
 ) -> list[str]:
     """Return the full PyInstaller command line for this platform."""
     # `--add-data` separates source and destination with the platform's path
@@ -172,9 +227,15 @@ def pyinstaller_args(
         str(WORK_DIR),
         "--specpath",
         str(WORK_DIR),
+        # Our own hooks, which take precedence over the ones an installed
+        # flet-cli ships; see `packaging/pyinstaller-hooks/`.
+        "--additional-hooks-dir",
+        str(HOOKS_DIR),
     ]
     for package in COLLECT_ALL:
         args += ["--collect-all", package]
+    for package in COLLECT_SUBMODULES:
+        args += ["--collect-submodules", package]
     for module in HIDDEN_IMPORTS:
         args += ["--hidden-import", module]
     for module in EXCLUDED_MODULES:
@@ -184,8 +245,8 @@ def pyinstaller_args(
     args += ["--add-data", f"{client_archive}{sep}flet_desktop/app"]
     args += ["--add-data", f"{client_sidecar}{sep}flet_desktop/app"]
     # `--add-binary` (unlike `--add-data`) marks the member as an executable,
-    # so the extracted `jsrt/deno` keeps its permission bits.
-    args += ["--add-binary", f"{deno_binary}{sep}{JSRT_DIR}"]
+    # so the extracted `jsrt/qjs` keeps its permission bits.
+    args += ["--add-binary", f"{js_runtime}{sep}{JSRT_DIR}"]
     # Icons and any other static files the UI loads at runtime.
     args += ["--add-data", f"{ASSETS_DIR}{sep}assets"]
     # One JSON file per UI language; `i18n` reads them from the bundle.
@@ -236,15 +297,19 @@ def sha256_file(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def deno_asset() -> str:
-    """Name of the Deno release asset built for this platform."""
-    arch = DENO_ARCHES.get(platform.machine().lower())
-    asset = DENO_ASSETS.get((sys.platform, arch))
-    if asset is None:
+def quickjs_asset() -> tuple[str, str]:
+    """Name and pinned digest of the QuickJS release asset for this platform."""
+    arch = QUICKJS_ARCHES.get(platform.machine().lower())
+    if sys.platform == "win32":
+        # Windows on ARM runs the x64 build emulated: quickjs-ng publishes no
+        # arm64 Windows binary, and neither does imageio-ffmpeg for ffmpeg.
+        arch = "x86_64"
+    pinned = QUICKJS_ASSETS.get((sys.platform, arch))
+    if pinned is None:
         raise BuildError(
-            f"no pinned Deno build for {sys.platform}/{platform.machine()}"
+            f"no pinned QuickJS build for {sys.platform}/{platform.machine()}"
         )
-    return asset
+    return pinned
 
 
 def download(url: str, dest: Path) -> None:
@@ -263,83 +328,48 @@ def download(url: str, dest: Path) -> None:
         raise
 
 
-def deno_digest(asset: str) -> str:
-    """SHA-256 GitHub publishes next to the Deno release asset.
+def stage_quickjs(stage_dir: Path) -> Path:
+    """Download, verify and place the QuickJS binary into `stage_dir`.
 
-    The `.sha256sum` file is written by different tools on different runners:
-    a POSIX `sha256sum` line on Linux and macOS, PowerShell's `Get-FileHash`
-    output on Windows (`Algorithm : SHA256`, `Hash : <digest>`, `Path : ...`).
-    The digest is the only 64-character hex token in either.
+    yt-dlp runs YouTube's player JavaScript in a JavaScript runtime to solve the
+    signature challenges; without one the stream URLs come back unsigned and the
+    affected downloads fail with HTTP 403. Deno is the runtime yt-dlp enables by
+    default, but it is a 96 MB binary where quickjs-ng is 2.5 MB, and yt-dlp
+    accepts it as the `quickjs` provider (see `engine.JS_RUNTIMES`). The binary
+    is what the app looks for at `jsrt/qjs` inside the bundle.
+
+    The download is kept in `build/quickjs/` between builds so that a rebuild
+    does not fetch it again; a cached copy is re-verified, and a digest that
+    does not match the pinned one aborts the build.
     """
-    with urllib.request.urlopen(f"{DENO_RELEASE_URL}/{asset}.sha256sum") as response:
-        text = response.read().decode("ascii", "replace")
-    digest = next(
-        (token.lower() for token in re.findall(r"[0-9a-fA-F]{64}", text)), ""
-    )
-    if not digest:
-        raise BuildError(f"no SHA-256 digest in {asset}.sha256sum: {text.strip()!r}")
-    return digest
-
-
-def stage_deno(stage_dir: Path) -> Path:
-    """Download, verify and extract the Deno binary into `stage_dir`.
-
-    yt-dlp shells out to a JavaScript runtime to solve YouTube's signature
-    challenges; without one the stream URLs come back unsigned and the
-    affected downloads fail with HTTP 403.  The release archive holds a single
-    self-contained binary, which the app looks for at `jsrt/deno` inside the
-    bundle.
-
-    The ~42 MB archive is kept in `build/deno/` between builds so that a
-    rebuild does not download it again; a cached copy is re-verified against
-    the published digest, and a mismatch aborts the build.
-    """
-    asset = deno_asset()
-    archive = DENO_CACHE_DIR / asset
-    try:
-        digest = deno_digest(asset)
-    except OSError as exc:
-        raise BuildError(f"could not read {asset}.sha256sum: {exc}") from exc
-
-    if archive.is_file() and sha256_file(archive) == digest:
-        print(f"  deno source: {archive.relative_to(PROJECT_DIR)} (cached)")
+    asset, digest = quickjs_asset()
+    cached = QUICKJS_CACHE_DIR / asset
+    if cached.is_file() and sha256_file(cached) == digest:
+        print(f"  quickjs source: {cached.relative_to(PROJECT_DIR)} (cached)")
     else:
-        DENO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        archive.unlink(missing_ok=True)
+        QUICKJS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cached.unlink(missing_ok=True)
         try:
-            download(f"{DENO_RELEASE_URL}/{asset}", archive)
+            download(f"{QUICKJS_RELEASE_URL}/{asset}", cached)
         except OSError as exc:
             raise BuildError(f"could not download {asset}: {exc}") from exc
-        actual = sha256_file(archive)
+        actual = sha256_file(cached)
         if actual != digest:
-            archive.unlink(missing_ok=True)
+            cached.unlink(missing_ok=True)
             raise BuildError(
-                f"{asset} is not the published file: "
+                f"{asset} is not the pinned file: "
                 f"expected sha256 {digest}, got {actual}"
             )
 
-    print(
-        f"  deno archive: {archive.name} "
-        f"({archive.stat().st_size / 1e6:.1f} MB, {DENO_VERSION})"
-    )
-    print(f"  deno sha256: {digest} matches the published digest")
-    return extract_deno(archive, stage_dir)
-
-
-def extract_deno(archive: Path, stage_dir: Path) -> Path:
-    """Extract the `deno` binary from `archive` into `stage_dir`."""
-    with zipfile.ZipFile(archive) as zf:
-        member = next(
-            (name for name in zf.namelist() if Path(name).name == DENO_BINARY), None
-        )
-        if member is None:
-            raise BuildError(f"{archive.name} contains no {DENO_BINARY}")
-        binary = stage_dir / DENO_BINARY
-        with zf.open(member) as src, binary.open("wb") as dest:
-            shutil.copyfileobj(src, dest)
+    binary = stage_dir / QUICKJS_BINARY
+    shutil.copyfile(cached, binary)
     if not IS_WINDOWS:
         binary.chmod(0o755)
-    print(f"  deno binary: {binary.name} -> {JSRT_DIR}/{DENO_BINARY} in the bundle")
+    print(
+        f"  quickjs binary: {asset} ({cached.stat().st_size / 1e6:.1f} MB, "
+        f"{QUICKJS_VERSION}) -> {JSRT_DIR}/{QUICKJS_BINARY} in the bundle"
+    )
+    print(f"  quickjs sha256: {digest} matches the pinned digest")
     return binary
 
 
@@ -418,10 +448,8 @@ def missing_payloads(artifact: Path, client_artifact: str) -> list[str]:
         missing.append(f"flet_desktop/app/{client_artifact}")
     if not any(n.startswith("imageio_ffmpeg/binaries/ffmpeg-") for n in names):
         missing.append("imageio_ffmpeg/binaries/ffmpeg-*")
-    if not any(n.startswith("yt_dlp/extractor/youtube") for n in names):
-        missing.append("yt_dlp/extractor/youtube*")
-    if f"{JSRT_DIR}/{DENO_BINARY}" not in names:
-        missing.append(f"{JSRT_DIR}/{DENO_BINARY}")
+    if f"{JSRT_DIR}/{QUICKJS_BINARY}" not in names:
+        missing.append(f"{JSRT_DIR}/{QUICKJS_BINARY}")
     for icon in ("icon.png", "icon.svg"):
         if f"assets/{icon}" not in names:
             missing.append(f"assets/{icon}")
@@ -430,9 +458,15 @@ def missing_payloads(artifact: Path, client_artifact: str) -> list[str]:
             missing.append(f"locales/{locale.name}")
     # The build's own version, which `version.py` reads back at runtime: a
     # build without it reports the base version, looks older than it is, and
-    # offers to update itself forever.
-    if version.STAMP_MODULE not in packaged_modules(reader):
+    # offers to update itself forever. The extractors are checked in the PYZ
+    # for the same reason they are there at all: yt-dlp imports them by name,
+    # so what matters is that they are importable, not that their sources were
+    # copied next to them.
+    modules = packaged_modules(reader)
+    if version.STAMP_MODULE not in modules:
         missing.append(version.STAMP_MODULE)
+    if not any(name.startswith("yt_dlp.extractor.youtube") for name in modules):
+        missing.append("yt_dlp.extractor.youtube*")
     return missing
 
 
@@ -458,12 +492,12 @@ def main() -> int:
         print("Staging payloads...")
         try:
             client_archive, client_sidecar = stage_flet_client(stage_dir)
-            deno_binary = stage_deno(stage_dir)
+            js_runtime = stage_quickjs(stage_dir)
         except BuildError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
-        args = pyinstaller_args(client_archive, client_sidecar, deno_binary)
+        args = pyinstaller_args(client_archive, client_sidecar, js_runtime)
         stamped = stamp_version()
         print(f"Version {stamped} written to {version.STAMP_FILE.name}")
         print("Running:", " ".join(shlex.quote(a) for a in args))
@@ -489,9 +523,9 @@ def main() -> int:
             f"\nBuilt {artifact} in {elapsed:.0f}s "
             f"({artifact.stat().st_size / 1e6:.1f} MB)\n"
             f"Version: {stamped}\n"
-            f"Bundled: the Flet desktop client, ffmpeg, Deno {DENO_VERSION} "
-            f"(the JavaScript runtime yt-dlp needs), assets/ and the locales in "
-            f"locales/.\n"
+            f"Bundled: the Flet desktop client, ffmpeg, QuickJS "
+            f"{QUICKJS_VERSION} (the JavaScript runtime yt-dlp needs), "
+            f"assets/ and the locales in locales/.\n"
             "First launch unpacks the Flet client into ~/.flet/client/, "
             "which takes a few seconds."
         )

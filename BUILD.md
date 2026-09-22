@@ -7,7 +7,7 @@ Cadenza ships as four artifacts, built by two tools:
 | Linux x86_64, arm64 | `python build.py` (PyInstaller) | Linux | `dist/Cadenza` |
 | Windows x64, arm64 | `python build.py` (PyInstaller) | Windows | `dist\Cadenza.exe` |
 | macOS arm64, x86_64 | `python build.py` (PyInstaller) | macOS | `dist/Cadenza.app` |
-| Android, all three ABIs | `flet build apk` | any of the three | `build/apk/cadenza.apk` |
+| Android, one APK per ABI | `flet build apk --split-per-abi` | any of the three | `build/apk/cadenza-<abi>.apk` |
 
 Neither tool cross-compiles - a desktop executable has to be frozen on the
 platform it runs on, and `flet build` refuses a target its host cannot produce -
@@ -28,7 +28,8 @@ python3 -m venv .venv
 .venv/bin/python build.py
 ```
 
-Produces `dist/Cadenza` — a single ELF file (~130 MB, a minute or two to build). Nothing
+Produces `dist/Cadenza` — a single ELF file (~70 MB on Ubuntu 26.04, a minute to
+build; see [What it weighs](#what-it-weighs-and-why)). Nothing
 else has to be installed on the target machine: Python, ffmpeg, the Flet client
 and a JavaScript runtime are all inside.
 
@@ -62,11 +63,14 @@ python3 -m venv .venv
 .venv/bin/flet build apk --yes
 ```
 
-Produces `build/apk/cadenza.apk`: a release APK, signed with the debug key, one
-fat package carrying `arm64-v8a`, `armeabi-v7a` and `x86_64` so it installs on
-any phone and on an emulator. `--split-per-abi` writes one APK per ABI instead,
-and `--android-signing-key-store` (with the three key flags, or
-`[tool.flet.android.signing]` in `pyproject.toml`) signs it with a real key.
+Produces `build/apk/cadenza-<abi>.apk`: a release APK per architecture
+(`arm64-v8a`, `armeabi-v7a`, `x86_64`), signed with the debug key. `--split-per-abi`
+is not optional here in practice: the three sets of native libraries — Flutter's,
+Python's and ffmpeg's — are what a package carrying all of them is made of, and
+two thirds of that never runs on any given phone. The three APKs are 91, 75 and
+97 MB; the fat one was 230 MB. `--android-signing-key-store` (with the three key
+flags, or `[tool.flet.android.signing]` in `pyproject.toml`) signs with a real
+key instead of the debug one.
 
 The first run installs what it needs by itself — Flutter 3.44.8 into
 `~/flutter`, a JDK 17 into `~/java`, the Android SDK into `~/Android/sdk`, some
@@ -112,8 +116,9 @@ and shows it in the header; "Change folder" can move it wherever the folder
 picker can reach. Nothing else is asked of the user: every Flet APK already
 declares `INTERNET`.
 
-Sideload with `adb install -r build/apk/cadenza.apk`, or copy the file to the
-phone and open it. The debug key means the system may warn about an unknown
+Sideload with `adb install -r build/apk/cadenza-arm64-v8a.apk` (that is the one
+every phone from the last few years wants), or copy the file to the phone and
+open it. The debug key means the system may warn about an unknown
 developer; it installs all the same.
 
 To try it without a phone — on a machine with `/dev/kvm` — install the emulator
@@ -148,7 +153,7 @@ A real run, ~25 s:
 ```
 version      1.0.57
 ffmpeg       /tmp/_MEI0003d59fP62kNf/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
-js runtimes  deno
+js runtimes  quickjs
 extractors   1751
 mutagen      1.48.1
 search       2 result(s): Sneaky Snitch
@@ -161,7 +166,7 @@ The `version` line is what the build stamped into itself
 ([Automatic builds and releases](#automatic-builds-and-releases)); the workflow
 compares it against the release it is publishing.
 
-The `extractors` line is the check on the `--collect-all yt_dlp` payload: yt-dlp
+The `extractors` line is the check on the `--collect-submodules yt_dlp` payload: yt-dlp
 builds that registry by scanning its own package, so a bundle that ships the
 package without its extractors still starts and only fails at the first search.
 
@@ -187,9 +192,9 @@ registry and mutagen.
 ```
 
 To prove the executable really is standalone, run the full check with a
-stripped environment: if `js runtimes` still says `deno`, that Deno came out of
-the bundle, not from the machine, and the search and download that follow were
-solved with it:
+stripped environment: if `js runtimes` still says `quickjs`, that QuickJS came
+out of the bundle, not from the machine, and the search and download that follow
+were solved with it:
 
 ```bash
 env -i PATH=/usr/bin:/bin HOME=/tmp/selftest-home \
@@ -237,7 +242,7 @@ release step to run by hand:
 | desktop (windows-x86_64) | `windows-latest` | `windows-x86_64.exe` |
 | desktop (macos-arm64) | `macos-latest` | `macos-arm64.zip` |
 | desktop (macos-x86_64) | `macos-15-intel` | `macos-x86_64.zip` |
-| android | `ubuntu-latest` | `cadenza.apk` |
+| android | `ubuntu-latest` | `cadenza-arm64-v8a.apk`, `cadenza-armeabi-v7a.apk`, `cadenza-x86_64.apk` |
 
 The names are what `update.py` looks for, so the same table is written down
 there; a file renamed on one side stops the app from finding it.
@@ -345,14 +350,15 @@ is gone on reload. yt-dlp could not download, and nothing could convert.
 | Session | X11 or Wayland desktop | any | any | any |
 | Installed dependencies | none | none | none | none |
 | Network | required for search, download and the tag lookup | required | required | required |
-| Disk | ~130 MB for the executable, plus your music | ~130 MB, plus your music | ~130 MB, plus your music | ~230 MB for the APK, plus your music |
+| Disk | ~70 MB for the executable, plus your music | ~70 MB, plus your music | ~70 MB, plus your music | ~91 MB for the APK, plus your music |
 | Admin rights | not needed | not needed | not needed | not needed |
 
-The executable carries Python, ffmpeg, the Flet desktop client, a Deno
+The executable carries Python, ffmpeg, the Flet desktop client, a QuickJS
 JavaScript runtime and the UI assets. It prefers a JavaScript runtime already
-installed (`deno`, `node`, `bun` or `quickjs` on `PATH`) and falls back to the
-bundled Deno, so nothing has to be set up either way. What the APK carries
-instead — and why it has no ffmpeg to run — is under [Android](#android).
+installed (`deno`, `node`, `bun` or `quickjs`/`qjs` on `PATH`) and falls back to
+the bundled QuickJS, so nothing has to be set up either way. What the APK
+carries instead — and why it has no ffmpeg to run — is under
+[Android](#android).
 
 First launch takes a few seconds longer: the executable unpacks the Flet client
 into `~/.flet/client/` and reuses it afterwards. Settings live in
@@ -456,15 +462,45 @@ a regional request with no file of its own (`es-AR`) falls back to `es.json`.
 A file that is missing, unreadable or malformed is reported on stderr and
 skipped, which leaves that language in English instead of breaking startup.
 
+## What it weighs, and why
+
+A Linux build on Ubuntu 26.04 is 69 MB, from 160 MB before the JavaScript
+runtime was swapped and the payload was pruned. Almost all of it is three
+things, and every one of them is the feature it looks like:
+
+| Payload | In the executable | Unpacked | Why it is there |
+| --- | --- | --- | --- |
+| ffmpeg (from `imageio-ffmpeg`) | 29 MB | 80 MB | Converts to FLAC/MP3/M4A/WAV and crops the video frame that stands in for cover art. A machine that has its own `ffmpeg` on `PATH` still carries this one. |
+| Flet desktop client | 16 MB | 16 MB | The Flutter window. `flet_desktop` unpacks it into `~/.flet/client/` on the first launch. |
+| Python modules (the PYZ) | 12 MB | 12 MB | The app plus yt-dlp's extractor registry, which is why it is not 2 MB. |
+| QuickJS | 1 MB | 2.6 MB | yt-dlp runs YouTube's player JS in it to solve the signature challenges. Deno, yt-dlp's default, is 96 MB for the same job. |
+| CPython and its extension modules | 4 MB | 11 MB | The interpreter the app is frozen with. |
+| OpenSSL, SQLite, zlib, assets, locales | 6 MB | 13 MB | HTTPS, and the UI's own files. |
+
+The numbers move with the interpreter: CI builds with the Python from
+`actions/setup-python` (a python-build-standalone build, which carries a shared
+`libpython` and every extension module), and Ubuntu's own `python3.14` is
+leaner, so the same commit weighs a little more on a runner than in a local
+build.
+
+What is *not* in there is worth as much as what is. `flet.cli` and everything it
+drags in (rich, pygments, cookiecutter, watchdog, markdown-it, httpx), the web
+view's FastAPI stack, PyAV and Pillow are all excluded — see
+`EXCLUDED_MODULES`. And the Flet client rides as the single archive
+`flet_desktop` looks for: `flet-cli`'s PyInstaller hook would *also* add the
+unpacked client from `~/.flet/client/`, so a build run on a machine that has
+`flet-cli` installed shipped the client twice. `packaging/pyinstaller-hooks/`
+overrides that hook, which is what took the executable from 107 MB to 69 MB.
+
 ## What gets bundled, and why
 
 | Payload | How | Reason |
 | --- | --- | --- |
 | `flet` | `--collect-all flet` | Control classes and submodules are resolved by name at runtime. |
 | `flet_desktop` | `--collect-all flet_desktop` + staged client archive | Flet launches a separate Flutter client process; the frozen app must ship it. |
-| `yt_dlp` | `--collect-all yt_dlp` | Extractors are imported lazily, so static analysis alone misses them and searches would fail. |
+| `yt_dlp` | `--collect-submodules yt_dlp` (its own PyInstaller hook collects the rest) | Extractors are imported lazily, so static analysis alone misses them and searches would fail. `--collect-all` would also copy the package's 10 MB of `.py` sources as data files, which the PYZ already holds compiled. |
 | `imageio_ffmpeg` | PyInstaller hook (`pyinstaller-hooks-contrib`, a PyInstaller dependency) + `--hidden-import imageio_ffmpeg.binaries` | Ships the ~79 MB static ffmpeg used when no system `ffmpeg` is on `PATH`; the package is reached via `importlib.resources` and is never imported directly. |
-| Deno | `--add-binary` after downloading the pinned release archive and verifying its published SHA-256 | yt-dlp needs a JavaScript runtime to decipher YouTube stream URLs; without one some tracks return HTTP 403. |
+| QuickJS | `--add-binary` after downloading the pinned release binary and verifying its pinned SHA-256 | yt-dlp needs a JavaScript runtime to decipher YouTube stream URLs; without one some tracks return HTTP 403. quickjs-ng solves the same challenges as yt-dlp's default Deno for 2.5 MB instead of 96 MB. |
 | `mutagen` | `--hidden-import mutagen` | Writes the tags and the cover art: yt-dlp uses it for the picture inside flac files, `metadata.py` for the tags a music database gave us. Without it those flac downloads fail. |
 | `assets/` | `--add-data` | Window icon (Windows) and the source SVG for the icon. |
 | `locales/` | `--add-data` | One JSON file per UI language; `i18n` reads them from inside the bundle. |
@@ -489,12 +525,13 @@ not supported; run it from a desktop session.
 ### The bundled JavaScript runtime
 
 `DENO_ASSETS` in `build.py` maps the build host (platform and machine type) to
-the matching Deno release archive; the archive is downloaded once into
-`build/deno/`, checked against the SHA-256 Deno publishes next to it, and the
-single `deno`/`deno.exe` member is embedded at `jsrt/`. A cached archive whose
-digest no longer matches is re-downloaded, and a digest mismatch aborts the
-build. To move to a newer Deno, change `DENO_VERSION` — the checksum is fetched
-per build, so nothing else needs updating.
+the matching QuickJS release binary; it is downloaded once into
+`build/quickjs/`, checked against the digest pinned in `QUICKJS_ASSETS` (the
+project publishes no checksum file, so the digests live in the source), and
+copied to `jsrt/qjs` inside the bundle. A cached copy whose digest no longer
+matches is re-downloaded, and a mismatch aborts the build. To move to a newer
+QuickJS, change `QUICKJS_VERSION` **and** the digests — a build that pins a
+version and trusts whatever arrives is not pinned at all.
 
 ## The exact PyInstaller command
 
@@ -511,15 +548,29 @@ Windows (macOS gets `--windowed` too):
   --distpath dist \
   --workpath build \
   --specpath build \
+  --additional-hooks-dir "<project>/packaging/pyinstaller-hooks" \
   --collect-all flet \
   --collect-all flet_desktop \
-  --collect-all yt_dlp \
+  --collect-submodules yt_dlp \
   --hidden-import imageio_ffmpeg.binaries \
   --hidden-import mutagen \
   --exclude-module av \
   --exclude-module PIL \
   --exclude-module flet_web \
-  --add-binary "<staged>/deno:jsrt" \
+  --exclude-module flet.cli \
+  --exclude-module flet.fastapi \
+  --exclude-module flet.testing \
+  --exclude-module flet.pytest_plugin \
+  --exclude-module pygments \
+  --exclude-module rich \
+  --exclude-module markdown_it \
+  --exclude-module cookiecutter \
+  --exclude-module watchdog \
+  --exclude-module questionary \
+  --exclude-module httpx \
+  --exclude-module httpcore \
+  --exclude-module oauthlib \
+  --add-binary "<staged>/qjs:jsrt" \
   --add-data "<project>/assets:assets" \
   --add-data "<project>/locales:locales" \
   --add-data "<staged>/flet-linux-<distro>-light-<arch>.tar.gz:flet_desktop/app" \
@@ -528,13 +579,16 @@ Windows (macOS gets `--windowed` too):
 
 (`--add-data` uses `;` instead of `:` on Windows.) The staged payloads live in
 a temporary directory, not in `build/`: `--clean` wipes the work path before
-every build. `--noupx` keeps the result identical whether or not UPX happens to
+every build. `--additional-hooks-dir` points at this repository's own hooks,
+which win over the ones an installed `flet-cli` ships. `--noupx` keeps the result identical whether or not UPX happens to
 be installed. The three `--exclude-module` flags drop what a frozen desktop
 build never uses: the in-process converter's PyAV and Pillow (`flet-cli` drags
 Pillow into the build environment, and the executable has its own ffmpeg) and
 `flet_web`, the browser view's server. When the build finishes, the script
 inspects the executable's archive and fails if the client archive, ffmpeg, the
-Deno binary, the UI assets, a locale file or the yt-dlp extractors are missing.
+QuickJS binary, the UI assets, a locale file, the version stamp or the yt-dlp
+extractors are missing - the last two in the PYZ, where Python modules actually
+live, rather than among the data files.
 
 ## Notes
 
@@ -545,7 +599,7 @@ Deno binary, the UI assets, a locale file or the yt-dlp extractors are missing.
 * **Settings** are read from `~/.config/Cadenza/config.json`
   (`%APPDATA%\Cadenza\config.json` on Windows) — nothing is written next to the
   executable.
-* **Single-file startup** costs an extra unpack of the whole bundle (~130 MB) on
+* **Single-file startup** costs an extra unpack of the whole bundle (~70 MB) on
   each run; that is inherent to `--onefile`. `--onedir` trades it for a folder
   of files if startup time matters more than tidiness.
 * **Antivirus** engines occasionally flag PyInstaller one-file builds; the

@@ -61,7 +61,16 @@ ASSETS = {
     ("darwin", "arm64"): "macos-arm64.zip",
     ("darwin", "x86_64"): "macos-x86_64.zip",
 }
-ANDROID_ASSET = "cadenza.apk"
+# Android ships one APK per ABI (`flet build apk --split-per-abi`), named after
+# the ABI; the fat package carrying all three is what `--split-per-abi` exists
+# to avoid, since two thirds of it never runs on any given phone.
+ANDROID_ASSETS = {
+    "aarch64": "cadenza-arm64-v8a.apk",
+    "arm64": "cadenza-arm64-v8a.apk",
+    "armv7l": "cadenza-armeabi-v7a.apk",
+    "armv8l": "cadenza-armeabi-v7a.apk",
+    "x86_64": "cadenza-x86_64.apk",
+}
 # `platform.machine()` spells the architecture differently on every OS.
 ARCHITECTURES = {
     "x86_64": "x86_64",
@@ -86,6 +95,9 @@ class Asset:
     # and it redirects to the same signed url the browser would get.
     url: str
     size: int
+    # What to hand a browser instead: a phone installs an APK from outside the
+    # app, and a plain link starts the download in one tap.
+    browser: str = ""
 
 
 @dataclass(frozen=True)
@@ -164,7 +176,12 @@ def _release(payload: dict) -> Release:
     for raw in payload.get("assets") or []:
         name, url = str(raw.get("name") or ""), str(raw.get("url") or "")
         if name and url:
-            assets[name] = Asset(name, url, int(raw.get("size") or 0))
+            assets[name] = Asset(
+                name,
+                url,
+                int(raw.get("size") or 0),
+                str(raw.get("browser_download_url") or ""),
+            )
     tag = str(payload.get("tag_name") or "")
     return Release(
         version=version.release(tag),
@@ -227,12 +244,26 @@ def asset_name() -> str | None:
     """The release asset built for this machine, or None when there is none."""
     if settings.is_mobile():
         # Only Android has a build; an iPhone could not run one anyway.
-        return ANDROID_ASSET if is_android() else None
+        return ANDROID_ASSETS.get(platform.machine().lower()) if is_android() else None
     if sys.platform == "win32":
         # Windows on ARM is served by the x64 build, which it runs emulated:
         # the bundled ffmpeg publishes no win_arm64 wheel.
         return ASSETS[("win32", "x86_64")]
     return ASSETS.get((sys.platform, architecture()))
+
+
+def download_url(release: Release) -> str:
+    """What to hand a browser: this machine's artifact, else the release page.
+
+    A phone cannot install an APK from inside the app, so this is the whole
+    update path there - and with one APK per ABI, the link is the one for the
+    ABI the device actually runs.
+    """
+    name = asset_name()
+    asset = release.asset(name) if name is not None else None
+    if asset is not None and asset.browser:
+        return asset.browser
+    return release.page
 
 
 def is_android() -> bool:

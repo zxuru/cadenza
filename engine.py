@@ -52,9 +52,12 @@ ART_CROP_FILTER = "crop=w='min(iw,ih*4/3)':h='min(ih,iw*3/4)'"
 # stream URLs - without one, extraction is deprecated and downloads fail with
 # HTTP 403 - so opt in to every runtime we can find on PATH.
 JS_RUNTIMES = ("deno", "node", "bun", "quickjs")
-# Deno binary packaged next to the app by build.py, used when the machine has
-# no JavaScript runtime of its own.
-BUNDLED_RUNTIME_PATHS = ("jsrt/deno.exe", "jsrt/deno")
+# Name each runtime's binary may have on PATH; quickjs-ng installs `qjs`, which
+# is what yt-dlp looks for inside the directory it is handed.
+RUNTIME_BINARIES = {"quickjs": ("quickjs", "qjs")}
+# The runtime packaged next to the app by build.py (quickjs-ng, 2.5 MB, where
+# yt-dlp's default Deno is 96 MB), used when the machine has none of its own.
+BUNDLED_RUNTIME_PATHS = ("jsrt/qjs.exe", "jsrt/qjs")
 # An ffmpeg the bundle carries itself, looked up the same way. Desktop builds
 # get theirs from imageio-ffmpeg; a platform whose wheels have none (Android)
 # has to ship a binary, and this is where it is expected to sit.
@@ -193,15 +196,16 @@ def find_js_runtimes() -> dict[str, dict[str, str]]:
     YouTube needs one to decipher stream URLs. Prefer whatever the machine has
     installed, fall back to the copy shipped inside the executable.
     """
-    runtimes = {
-        name: {"path": path}
-        for name in JS_RUNTIMES
-        if (path := shutil.which(name)) is not None
-    }
+    runtimes: dict[str, dict[str, str]] = {}
+    for name in JS_RUNTIMES:
+        for binary in RUNTIME_BINARIES.get(name, (name,)):
+            if (path := shutil.which(binary)) is not None:
+                runtimes[name] = {"path": path}
+                break
     if runtimes:
         return runtimes
-    if (deno := _bundled_runtime()) is not None:
-        return {"deno": {"path": str(deno)}}
+    if (bundled := _bundled_runtime()) is not None:
+        return {"quickjs": {"path": str(bundled)}}
     return {"deno": {}}  # yt-dlp's own default: extraction stays degraded
 
 
