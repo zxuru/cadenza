@@ -32,6 +32,11 @@ The ``assets/`` directory (UI icons plus the Windows executable icon) is
 copied in as data, so the frozen app is fully standalone: it needs no network
 access and no system-wide JavaScript runtime to run.
 
+The version the build reports is written into ``_buildinfo.py`` before
+PyInstaller runs.  CI passes the release in ``CADENZA_VERSION``; a build made
+by hand gets ``<base>+local``, which the updater reads as "leave this one
+alone" (see ``version.py`` and ``update.py``).
+
 The executable is written to ``dist/``; PyInstaller's intermediates and the
 generated spec file go to ``build/``.
 """
@@ -53,6 +58,8 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+
+import version
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ENTRY_POINT = PROJECT_DIR / "main.py"
@@ -127,6 +134,18 @@ HIDDEN_IMPORTS = ("imageio_ffmpeg.binaries", "mutagen")
 #   a virtualenv carrying the web or cli extras builds a few MB larger than
 #   the clean one CI uses.)
 EXCLUDED_MODULES = ("av", "PIL", "flet_web")
+
+
+def stamp_version() -> str:
+    """Write the version the frozen app reports; returns it.
+
+    `CADENZA_VERSION` is what CI passes for the release it is about to publish.
+    A build made by hand has no version to claim, so it stamps the base one as
+    `+local` - the updater replaces a released build, never someone's own.
+    """
+    requested = os.environ.get("CADENZA_VERSION") or None
+    version.stamp(requested)
+    return requested or f"{version.BASE_VERSION}{version.LOCAL_SUFFIX}"
 
 
 def pyinstaller_args(
@@ -373,13 +392,27 @@ def archive_entry_count(artifact: Path) -> int:
     return len(CArchiveReader(str(artifact)).toc)
 
 
+def packaged_modules(reader: CArchiveReader) -> set[str]:
+    """Names of the Python modules the executable carries.
+
+    The executable's own table of contents holds data files, the entry script
+    and the PYZ; everything else is compiled into that PYZ, one level down.
+    """
+    archive = next(str(entry) for entry in reader.toc if str(entry).endswith(".pyz"))
+    entries = reader.open_embedded_archive(archive).toc
+    return {
+        ".".join(entry) if isinstance(entry, tuple) else str(entry) for entry in entries
+    }
+
+
 def missing_payloads(artifact: Path, client_artifact: str) -> list[str]:
     """Names of bundled payloads absent from the executable's archive."""
     from PyInstaller.archive.readers import CArchiveReader
 
     # The archive keeps whatever separator the build was given, and on Windows
     # that is a backslash: compare on one form or every name looks missing.
-    names = {name.replace("\\", "/") for name in CArchiveReader(str(artifact)).toc}
+    reader = CArchiveReader(str(artifact))
+    names = {str(name).replace("\\", "/") for name in reader.toc}
     missing = []
     if f"flet_desktop/app/{client_artifact}" not in names:
         missing.append(f"flet_desktop/app/{client_artifact}")
@@ -395,6 +428,11 @@ def missing_payloads(artifact: Path, client_artifact: str) -> list[str]:
     for locale in sorted(LOCALES_DIR.glob("*.json")):
         if f"locales/{locale.name}" not in names:
             missing.append(f"locales/{locale.name}")
+    # The build's own version, which `version.py` reads back at runtime: a
+    # build without it reports the base version, looks older than it is, and
+    # offers to update itself forever.
+    if version.STAMP_MODULE not in packaged_modules(reader):
+        missing.append(version.STAMP_MODULE)
     return missing
 
 
@@ -426,6 +464,8 @@ def main() -> int:
             return 1
 
         args = pyinstaller_args(client_archive, client_sidecar, deno_binary)
+        stamped = stamp_version()
+        print(f"Version {stamped} written to {version.STAMP_FILE.name}")
         print("Running:", " ".join(shlex.quote(a) for a in args))
         started = time.monotonic()
         subprocess.run(args, cwd=PROJECT_DIR, check=True)
@@ -448,6 +488,7 @@ def main() -> int:
         print(
             f"\nBuilt {artifact} in {elapsed:.0f}s "
             f"({artifact.stat().st_size / 1e6:.1f} MB)\n"
+            f"Version: {stamped}\n"
             f"Bundled: the Flet desktop client, ffmpeg, Deno {DENO_VERSION} "
             f"(the JavaScript runtime yt-dlp needs), assets/ and the locales in "
             f"locales/.\n"

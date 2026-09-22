@@ -8,6 +8,11 @@ name: build
 # SDK.
 #
 # iOS and the web are deliberately not built; BUILD.md says why.
+#
+# Every push to `main` publishes a release, so the newest release is always the
+# code that was pushed last and an installed app has something to update itself
+# to (see update.py). The version comes from the `version` job: `v1.2.3` for a
+# tag, `v<major>.<minor>.<run number>` for a push.
 
 on:
   push:
@@ -22,18 +27,52 @@ permissions:
   contents: write
 
 jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.number.outputs.version }}
+      tag: ${{ steps.number.outputs.tag }}
+      build: ${{ steps.number.outputs.build }}
+      publish: ${{ steps.number.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The patch is the run number, which only grows: no two builds of the
+      # same base version are ordered randomly, which is what the app's
+      # updater needs to tell a newer release from an older one.
+      - name: Work out the version this run publishes
+        id: number
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            base="$(python3 -c 'import version; print(version.BASE_VERSION)')"
+            version="${base%.*}.$GITHUB_RUN_NUMBER"
+          fi
+          publish=false
+          if [[ "$GITHUB_REF" == refs/tags/v* || "$GITHUB_REF" == refs/heads/main ]]; then
+            publish=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "build=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "This run publishes v$version" >> "$GITHUB_STEP_SUMMARY"
+
   desktop:
     name: desktop (${{ matrix.name }})
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: linux-x86_64, os: ubuntu-latest, artifact: linux-x86_64.tar.gz }
-          - { name: linux-arm64, os: ubuntu-24.04-arm, artifact: linux-arm64.tar.gz }
-          - { name: windows-x86_64, os: windows-latest, artifact: dist/Cadenza.exe }
-          - { name: macos-arm64, os: macos-latest, artifact: macos-arm64.zip }
-          - { name: macos-x86_64, os: macos-15-intel, artifact: macos-x86_64.zip }
+          - { name: linux-x86_64, os: ubuntu-latest, asset: linux-x86_64.tar.gz }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, asset: linux-arm64.tar.gz }
+          - { name: windows-x86_64, os: windows-latest, asset: windows-x86_64.exe }
+          - { name: macos-arm64, os: macos-latest, asset: macos-arm64.zip }
+          - { name: macos-x86_64, os: macos-15-intel, asset: macos-x86_64.zip }
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +85,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller
 
+      # `build.py` stamps the version into `_buildinfo.py` before PyInstaller
+      # runs, so the executable knows which release it is and can tell whether
+      # the feed has a newer one.
       - name: Build
+        env:
+          CADENZA_VERSION: ${{ needs.version.outputs.version }}
         run: python build.py
 
       # The frozen build checks itself: ffmpeg, the JavaScript runtime, the
@@ -55,8 +99,14 @@ jobs:
       # "Sign in to confirm you're not a bot", for single videos and often for
       # the search too, which says nothing about the build. Run `--selftest`
       # without the flag on a real machine; BUILD.md shows what it prints.
+      #
+      # The version line is checked too: a build that lost its stamp would
+      # report the base version, look older than it is, and update itself in a
+      # loop.
       - name: Verify
         shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           binary=dist/Cadenza
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -64,35 +114,48 @@ jobs:
           elif [ "${{ runner.os }}" = "Windows" ]; then
             binary=dist/Cadenza.exe
           fi
-          if ! "$binary" --selftest --no-download; then
-            # A windowed build has no console to print to: it leaves the
-            # report in selftest.txt next to where it ran.
-            cat selftest.txt 2>/dev/null || true
+          output="$(mktemp)"
+          status=0
+          "$binary" --selftest --no-download >"$output" 2>&1 || status=$?
+          # A windowed build has no console to print to: it leaves the report
+          # in selftest.txt next to where it ran.
+          report="$(cat "$output" selftest.txt 2>/dev/null || true)"
+          echo "$report"
+          if [ "$status" != 0 ]; then
+            exit 1
+          fi
+          if ! grep -qE "^version +${VERSION}$" <<<"$report"; then
+            echo "::error::the build does not report version $VERSION"
             exit 1
           fi
 
       # A tarball keeps the executable bit; `ditto` keeps the permissions and
-      # symlinks an .app bundle is made of.
+      # symlinks an .app bundle is made of. The name is the one `update.py`
+      # looks for in a release.
       - name: Package
         shell: bash
         run: |
           case "${{ runner.os }}" in
             macOS)
               ditto -c -k --sequesterRsrc --keepParent dist/Cadenza.app \
-                "${{ matrix.name }}.zip"
+                "${{ matrix.asset }}"
               ;;
             Linux)
-              tar -czf "${{ matrix.name }}.tar.gz" -C dist Cadenza
+              tar -czf "${{ matrix.asset }}" -C dist Cadenza
+              ;;
+            Windows)
+              cp dist/Cadenza.exe "${{ matrix.asset }}"
               ;;
           esac
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.artifact }}
+          path: ${{ matrix.asset }}
 
   android:
     name: android (apk)
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -117,9 +180,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "flet[all]==1.0.0"
 
-      # --yes answers the prompts that install Flutter, the JDK and the SDK.
+      # The APK carries the same version stamp the desktop builds do, and tells
+      # Android about it: `versionCode` is what makes an install over the old
+      # one an upgrade rather than a refusal.
       - name: Build APK
-        run: flet build apk --yes
+        run: |
+          python version.py --stamp "${{ needs.version.outputs.version }}"
+          flet build apk --yes \
+            --build-version "${{ needs.version.outputs.version }}" \
+            --build-number "${{ needs.version.outputs.build }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -132,18 +201,38 @@ jobs:
 
   release:
     name: release
-    needs: [desktop, android]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, desktop, android]
+    if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.version.outputs.tag }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Attach every artifact to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # What `update.py` checks a download against before installing it.
+      - name: List the digests of every artifact
         run: |
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-            --title "Cadenza $GITHUB_REF_NAME" --generate-notes \
-            artifacts/*/*
+          (cd artifacts && sha256sum */* | sed 's|  .*/|  |') > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A rerun of the same run number: the release is already there.
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              artifacts/*/* SHA256SUMS
+            exit 0
+          fi
+          # On a push the tag does not exist yet - the release creates it, at
+          # the commit this run built; a tag push brought its own.
+          target=()
+          if [[ "$GITHUB_REF" != refs/tags/* ]]; then
+            target=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "Cadenza v$VERSION" --generate-notes "${target[@]}" \
+            artifacts/*/* SHA256SUMS

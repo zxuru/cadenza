@@ -11,7 +11,7 @@ Cadenza ships as four artifacts, built by two tools:
 
 Neither tool cross-compiles - a desktop executable has to be frozen on the
 platform it runs on, and `flet build` refuses a target its host cannot produce -
-so [Automatic builds](#automatic-builds) builds all of them at once and the
+so [Automatic builds and releases](#automatic-builds-and-releases) builds all of them at once and the
 commands below are for doing one by hand. iOS and the web are not targets at
 all: [What is not built, and why](#what-is-not-built-and-why).
 
@@ -49,7 +49,7 @@ always invoke it through the virtualenv.
 
 Same commands as Linux. The build applies `--windowed` as well, so expect
 `dist/Cadenza.app` — a macOS *bundle directory*, not a single file. It is
-built and self-tested by [Automatic builds](#automatic-builds) on a macOS
+built and self-tested by [Automatic builds and releases](#automatic-builds-and-releases) on a macOS
 runner; the one thing still missing is the icon, which wants an `.icns` (the
 repository carries `.ico` and `.png`), so the bundle shows the PyInstaller
 default in the dock.
@@ -146,6 +146,7 @@ mkdir -p /tmp/frozen-selftest && cd /tmp/frozen-selftest
 A real run, ~25 s:
 
 ```
+version      1.0.57
 ffmpeg       /tmp/_MEI0003d59fP62kNf/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
 js runtimes  deno
 extractors   1751
@@ -155,6 +156,10 @@ download     Sneaky Snitch.flac (22.3 MiB)
 tags         artist=Kevin MacLeod · album=Mystery · genre=Electronic · date=2014-12-27
 cover art    mjpeg 1400x1400
 ```
+
+The `version` line is what the build stamped into itself
+([Automatic builds and releases](#automatic-builds-and-releases)); the workflow
+compares it against the release it is publishing.
 
 The `extractors` line is the check on the `--collect-all yt_dlp` payload: yt-dlp
 builds that registry by scanning its own package, so a bundle that ships the
@@ -195,33 +200,78 @@ Finally, launch it without arguments to confirm the window opens (the Flet
 client process appears ~1.5 s after start, the window ~2.5 s) and that the
 first-run dialog asks where to put your music.
 
+The same executable says what the **Check for updates** button in its footer
+would find, without opening a window:
+
+```bash
+/absolute/path/to/dist/Cadenza --check-updates
+```
+
+```
+version      1.0.57
+asset        linux-x86_64.tar.gz
+token        given
+release      none newer
+```
+
+It downloads nothing; a release line other than `none newer` is what the
+button would then install. Like the self-test it falls back to a file
+(`updatecheck.txt`) when the build has no console, and it exits non-zero only
+when the feed could not be read.
+
 The self-test is the *desktop* build's check: it runs ffmpeg, which an Android
 build has not got, and a phone has no console to run it from. An APK is
 verified by running it — see [Running it](#running-it).
 
-## Automatic builds
+## Automatic builds and releases
 
 `.github/workflows/build.yml` builds every target on the platform that can
-build it, and runs the self-test on each desktop artifact before uploading it:
+build it, runs the self-test on each desktop artifact before uploading it, and
+then **publishes every artifact as a GitHub release** — there is no separate
+release step to run by hand:
 
-| Job | Runner | Artifact |
+| Job | Runner | Release asset |
 | --- | --- | --- |
 | desktop (linux-x86_64) | `ubuntu-latest` | `linux-x86_64.tar.gz` |
 | desktop (linux-arm64) | `ubuntu-24.04-arm` | `linux-arm64.tar.gz` |
-| desktop (windows-x86_64) | `windows-latest` | `Cadenza.exe` |
+| desktop (windows-x86_64) | `windows-latest` | `windows-x86_64.exe` |
 | desktop (macos-arm64) | `macos-latest` | `macos-arm64.zip` |
 | desktop (macos-x86_64) | `macos-15-intel` | `macos-x86_64.zip` |
 | android | `ubuntu-latest` | `cadenza.apk` |
+
+The names are what `update.py` looks for, so the same table is written down
+there; a file renamed on one side stops the app from finding it.
 
 Windows on ARM is the one architecture left out: `imageio-ffmpeg`, which
 supplies the bundled ffmpeg, publishes no `win_arm64` wheel, so the x64 build
 is the one to hand out there — Windows runs it through its own emulation.
 
 It runs on a push to `main`, on a tag, and on demand (**Actions → build → Run
-workflow**). A tag additionally publishes every artifact as a GitHub release:
+workflow**). The `version` job decides the number:
+
+| Trigger | Version | Example |
+| --- | --- | --- |
+| push to `main` | `<major>.<minor>.<run number>`, from `BASE_VERSION` in `version.py` | `v1.0.57` |
+| push of a `v*` tag | the tag itself | `v1.2.3` |
+
+The patch is the Actions run number, which only grows: an installed copy can
+always tell a newer release from an older one, which is the whole basis of
+[Updating](#updating). A build that only rewrites prose builds nothing —
+`paths-ignore` leaves `**/*.md` and `packaging/` out — so nothing is released
+for it either.
+
+The version is stamped into `_buildinfo.py` before the build runs
+(`CADENZA_VERSION` for `build.py`, `version.py --stamp` for the APK), and each
+desktop artifact proves it: the self-test prints a `version` line and the
+workflow fails if it does not match the release. An executable that lost its
+stamp would report the base version, look older than it is, and offer to
+update itself forever.
+
+Bumping `BASE_VERSION` in `version.py` is how a release line moves on (a new
+minor or major); everything else is automatic.
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.2.3 && git push origin v1.2.3   # only for a version worth naming
 ```
 
 Every run is from scratch except the Android toolchain: Flutter, the JDK and
@@ -229,6 +279,50 @@ the Android SDK are cached under a key that includes `pyproject.toml`, so they
 are downloaded again only when the Android side of the app changes. Nothing has
 to be built locally for a release; the two commands above are for working on
 one platform at a time.
+
+The release carries a `SHA256SUMS` file next to the artifacts, and `update.py`
+checks a download against it before installing anything.
+
+## Updating
+
+The app updates when asked, never on its own: the footer has the version it is
+running and a **Check for updates** button, and nothing is fetched before that
+button is pressed.
+
+* **Desktop (frozen build).** The check reads GitHub's newest release; if it is
+  newer, the artifact for this platform is downloaded, checked against
+  `SHA256SUMS`, put in place of the running executable (the whole `.app` bundle
+  on macOS) and the app restarts into it. It waits first if a download is in
+  progress — `update.py` never restarts the app out from under one.
+* **Android.** An app cannot install an APK from inside itself, so the footer
+  offers the release page and the browser downloads it; the system then does
+  what installing an APK always asks for.
+* **From a checkout** (`python main.py`, or a build made by hand) nothing is
+  replaced: the button says so instead.
+
+### The repository, and the token it does not need
+
+`zxuru/cadenza` is public, so the feed and the artifacts need no credentials:
+the button works out of the box, on any machine.
+
+`update.py` still sends a token when it finds one, because a private fork or a
+mirror would need it — from `update_token` in the config file, or from
+`CADENZA_UPDATE_TOKEN`:
+
+```json
+{
+  "update_token": "github_pat_..."
+}
+```
+
+A fine-grained token with **Contents: read** on that repository is enough, and
+it stays on the machine it was pasted on — it is not part of any build. Without
+one, a private repository answers 404 and the check reports *a private
+repository needs `update_token`* instead of pretending the app is up to date.
+
+When there is a token it is dropped as soon as GitHub redirects the download to
+its asset storage: the redirect is signed, and that signature is the whole
+credential there (`update._Redirect`).
 
 ## What is not built, and why
 

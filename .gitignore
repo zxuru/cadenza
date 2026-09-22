@@ -2,6 +2,8 @@
 dist/
 build/
 *.spec
+# The version stamp a build writes (`version.py --stamp`).
+_buildinfo.py
 
 # Local environment
 .venv/
