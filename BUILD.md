@@ -28,8 +28,9 @@ python3 -m venv .venv
 .venv/bin/python build.py
 ```
 
-Produces `dist/Cadenza` — a single ELF file (~70 MB on Ubuntu 26.04, a minute to
-build; see [What it weighs](#what-it-weighs-and-why)). Nothing
+Produces `dist/Cadenza` — a single ELF file (69 MB on Ubuntu 26.04, a minute to
+build; CI's Python makes the released one 85 MB, see
+[What it weighs](#what-it-weighs-and-why)). Nothing
 else has to be installed on the target machine: Python, ffmpeg, the Flet client
 and a JavaScript runtime are all inside.
 
@@ -350,7 +351,7 @@ is gone on reload. yt-dlp could not download, and nothing could convert.
 | Session | X11 or Wayland desktop | any | any | any |
 | Installed dependencies | none | none | none | none |
 | Network | required for search, download and the tag lookup | required | required | required |
-| Disk | ~70 MB for the executable, plus your music | ~70 MB, plus your music | ~70 MB, plus your music | ~91 MB for the APK, plus your music |
+| Disk | ~85 MB for the executable, plus your music | ~98 MB, plus your music | ~96 MB, plus your music | ~91 MB for the APK, plus your music |
 | Admin rights | not needed | not needed | not needed | not needed |
 
 The executable carries Python, ffmpeg, the Flet desktop client, a QuickJS
@@ -464,9 +465,11 @@ skipped, which leaves that language in English instead of breaking startup.
 
 ## What it weighs, and why
 
-A Linux build on Ubuntu 26.04 is 69 MB, from 160 MB before the JavaScript
-runtime was swapped and the payload was pruned. Almost all of it is three
-things, and every one of them is the feature it looks like:
+The released Linux build is 85 MB, and 69 MB when built on Ubuntu 26.04 - the
+difference is the interpreter CI freezes it with. Before the JavaScript runtime
+was swapped and the payload was pruned it was 160 MB (131 MB to download). What
+is left is almost entirely three things, and every one of them is the feature it
+looks like:
 
 | Payload | In the executable | Unpacked | Why it is there |
 | --- | --- | --- | --- |
@@ -477,11 +480,11 @@ things, and every one of them is the feature it looks like:
 | CPython and its extension modules | 4 MB | 11 MB | The interpreter the app is frozen with. |
 | OpenSSL, SQLite, zlib, assets, locales | 6 MB | 13 MB | HTTPS, and the UI's own files. |
 
-The numbers move with the interpreter: CI builds with the Python from
+The numbers move with the interpreter, and that is the whole of the difference
+between the two sizes above: CI builds with the Python from
 `actions/setup-python` (a python-build-standalone build, which carries a shared
-`libpython` and every extension module), and Ubuntu's own `python3.14` is
-leaner, so the same commit weighs a little more on a runner than in a local
-build.
+`libpython` and every extension module), where Ubuntu's own `python3.14` is
+leaner.
 
 What is *not* in there is worth as much as what is. `flet.cli` and everything it
 drags in (rich, pygments, cookiecutter, watchdog, markdown-it, httpx), the web
@@ -599,7 +602,7 @@ live, rather than among the data files.
 * **Settings** are read from `~/.config/Cadenza/config.json`
   (`%APPDATA%\Cadenza\config.json` on Windows) — nothing is written next to the
   executable.
-* **Single-file startup** costs an extra unpack of the whole bundle (~70 MB) on
+* **Single-file startup** costs an extra unpack of the whole bundle (~85 MB) on
   each run; that is inherent to `--onefile`. `--onedir` trades it for a folder
   of files if startup time matters more than tidiness.
 * **Antivirus** engines occasionally flag PyInstaller one-file builds; the

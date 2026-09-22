@@ -27,7 +27,7 @@ release](https://github.com/zxuru/cadenza/releases/latest):
 | Windows | 64-bit Windows 10 or 11 |
 | macOS | macOS 12 or newer, Intel or Apple silicon |
 | Android | Android 7 or newer, `arm64-v8a`, `armeabi-v7a` or `x86_64` |
-| Any | ~70 MB of disk (~91 MB for an APK) and a network connection |
+| Any | ~85 MB of disk (74-97 MB for an APK) and a network connection |
 
 Nothing else is needed: no Python, no ffmpeg, no `PATH` entries, no admin
 rights. The first launch takes a few extra seconds, when the Flet client is
