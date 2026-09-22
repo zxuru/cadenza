@@ -1,0 +1,13 @@
+# Flet 1.0 UI API (ft.run, ft.Colors, ft.Icons, page.window, ...)
+flet>=1.0,<2
+
+# Engine: extractor fixes land constantly, so leave this unpinned and update often.
+yt-dlp
+
+# Cover art: yt-dlp writes the picture into flac files with this (mp3 and m4a go
+# through ffmpeg). Without it a flac download fails outright.
+mutagen
+
+# Optional fallback: ships a static ffmpeg binary, used only when `ffmpeg`
+# is not on PATH. Drop this line if your system already has ffmpeg.
+imageio-ffmpeg>=0.6

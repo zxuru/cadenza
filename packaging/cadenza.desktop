@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Cadenza
+Comment=Search, preview and download music
+Comment[es]=Busca, revisa y descarga música
+Exec=Cadenza
+Icon=cadenza
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;audio;download;music;música;descargar;
+StartupNotify=true
+StartupWMClass=cadenza

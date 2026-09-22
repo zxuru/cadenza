@@ -1,0 +1,15 @@
+# Build output
+dist/
+build/
+*.spec
+
+# Local environment
+.venv/
+__pycache__/
+*.pyc
+
+# Default output folder of earlier versions
+downloads/
+
+# OS noise
+.DS_Store
