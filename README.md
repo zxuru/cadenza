@@ -132,3 +132,13 @@ processes and no files that survive a reload.
 The interface follows the system language: English and Spanish today, one JSON
 file per language in `locales/` — dropping a file in is the whole registration
 step. `python i18n.py` checks a translation against English.
+
+## License
+
+GPL-3.0-or-later; the full text is in `LICENSE`.
+
+That is not a preference. The app imports
+[mutagen](https://mutagen.readthedocs.io/) to write tags and cover art, which is
+GPL-2.0-or-later, and the executable ships an ffmpeg build that is GPL-3.0
+itself, so a permissive license would not be valid for what is distributed here.
+`BUILD.md` lists every bundled payload and its license.

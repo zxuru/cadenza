@@ -20,7 +20,7 @@ on:
     tags: ["v*"]
     # A commit that only rewrites prose does not need six runners; tag pushes
     # are exempt from path filters, so a release still builds everything.
-    paths-ignore: ["**/*.md", "packaging/**"]
+    paths-ignore: ["**/*.md", "packaging/**", "LICENSE"]
   workflow_dispatch:
 
 permissions:

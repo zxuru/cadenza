@@ -10,6 +10,11 @@
 name = "cadenza"
 version = "1.0.0"
 description = "Search, preview and download music"
+# Not a preference: `metadata.py` imports mutagen (GPL-2.0-or-later) and the
+# bundle carries an ffmpeg build that is GPL-3.0 itself, so the app has to be
+# GPL-compatible. See `BUILD.md` for what is bundled and under which license.
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "flet>=1.0,<2",

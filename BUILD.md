@@ -508,6 +508,27 @@ overrides that hook, which is what took the executable from 107 MB to 69 MB.
 | `assets/` | `--add-data` | Window icon (Windows) and the source SVG for the icon. |
 | `locales/` | `--add-data` | One JSON file per UI language; `i18n` reads them from inside the bundle. |
 
+### Licenses
+
+Two of the payloads decide the license of the whole, so it is worth writing down
+what each one is:
+
+| Payload | License |
+| --- | --- |
+| Cadenza itself | GPL-3.0-or-later (`LICENSE`) |
+| yt-dlp | Unlicense (public domain) |
+| `flet`, `flet_desktop` | Apache-2.0 |
+| ffmpeg, the binary `imageio_ffmpeg` ships | GPL-3.0 — the wrapper is BSD-2-Clause, the binary is a `--enable-gpl --enable-version3` static build |
+| QuickJS (`quickjs-ng`) | MIT |
+| mutagen | GPL-2.0-or-later |
+| PyInstaller's bootloader | GPL-2.0-or-later, with the exception that covers the applications it freezes |
+| PyAV, Pillow (Android only) | BSD-3-Clause, MIT-CMU |
+
+`metadata.py` imports mutagen and the executable carries that ffmpeg, so an app
+distributing both has to be GPL-compatible: Cadenza is GPL-3.0-or-later rather
+than MIT for that reason, not by preference. Nothing here is copyleft in a way
+that reaches a user's own music or downloads.
+
 ### The Flet desktop client
 
 `flet_desktop` looks for a client archive inside its own package directory
