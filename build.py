@@ -57,6 +57,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 ENTRY_POINT = PROJECT_DIR / "main.py"
 APP_NAME = "Cadenza"
 ASSETS_DIR = PROJECT_DIR / "assets"
+LOCALES_DIR = PROJECT_DIR / "locales"
 DIST_DIR = PROJECT_DIR / "dist"
 WORK_DIR = PROJECT_DIR / "build"
 
@@ -105,9 +106,10 @@ COLLECT_ALL = ("flet", "flet_desktop", "yt_dlp")
 
 # `imageio_ffmpeg.binaries` holds the static ffmpeg executable and is reached
 # through `importlib.resources`, so it is never imported directly.  `mutagen`
-# reaches yt-dlp through a `try:`/`except ImportError:` shim and is only used
-# for some containers, so it is named here too: a build that drops it still
-# downloads, but every flac download then fails while writing the cover art.
+# is imported inside the tag writers (`metadata.py`) and behind a
+# `try:`/`except ImportError:` shim in yt-dlp, so static analysis sees neither:
+# a build that drops it still downloads, but every flac download then fails
+# while writing the cover art, and no tag lookup can be written.
 HIDDEN_IMPORTS = ("imageio_ffmpeg.binaries", "mutagen")
 
 
@@ -149,6 +151,8 @@ def pyinstaller_args(
     args += ["--add-binary", f"{deno_binary}{sep}{JSRT_DIR}"]
     # Icons and any other static files the UI loads at runtime.
     args += ["--add-data", f"{ASSETS_DIR}{sep}assets"]
+    # One JSON file per UI language; `i18n` reads them from the bundle.
+    args += ["--add-data", f"{LOCALES_DIR}{sep}locales"]
     if IS_WINDOWS:
         # Only Windows takes the icon from the executable itself; the window
         # icon comes from the bundled PNG/SVG everywhere.
@@ -353,6 +357,9 @@ def missing_payloads(artifact: Path, client_artifact: str) -> list[str]:
     for icon in ("icon.png", "icon.svg"):
         if f"assets/{icon}" not in names:
             missing.append(f"assets/{icon}")
+    for locale in sorted(LOCALES_DIR.glob("*.json")):
+        if f"locales/{locale.name}" not in names:
+            missing.append(f"locales/{locale.name}")
     return missing
 
 
@@ -403,7 +410,8 @@ def main() -> int:
             f"\nBuilt {artifact} in {elapsed:.0f}s "
             f"({artifact.stat().st_size / 1e6:.1f} MB)\n"
             f"Bundled: the Flet desktop client, ffmpeg, Deno {DENO_VERSION} "
-            f"(the JavaScript runtime yt-dlp needs) and assets/.\n"
+            f"(the JavaScript runtime yt-dlp needs), assets/ and the locales in "
+            f"locales/.\n"
             "First launch unpacks the Flet client into ~/.flet/client/, "
             "which takes a few seconds."
         )

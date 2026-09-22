@@ -1,128 +1,100 @@
-"""UI strings and system-language detection.
+"""UI strings, system-language detection, and the locale files they come from.
 
-Add a language by adding one `TRANSLATIONS` entry; anything missing from it
-falls back to English, so a partial translation is always usable.
+Every language is one file, `locales/<code>.json` (ISO 639-1, plus a region
+only when it differs from the base language: `en.json`, `es.json`,
+`pt-BR.json`).  Dropping a file in is the whole registration step — nothing in
+this module or in the UI lists the languages by hand.
+
+A locale file is a flat JSON object.  A key holds either the finished string:
+
+    "search": "Search",
+
+or, when the text depends on a count, its plural forms:
+
+    "status_results": {
+        "one": "1 result found.",
+        "many": "{count} results found."
+    }
+
+`Translator` renders the first with `t("search")` and the second with
+`t.plural("status_results", count)`; `{name}` placeholders are filled from the
+keyword arguments of either call.  Only the forms a language actually needs
+have to be defined, and anything missing falls back to English, so a partially
+translated file is always usable.
+
+`python i18n.py` checks every language against English and exits non-zero when
+one is incomplete, unknown keys included; `python i18n.py pt-BR` checks one.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from functools import lru_cache
+from pathlib import Path
+
+import bundle
 
 DEFAULT_LANGUAGE = "en"
-SUPPORTED_LANGUAGES = ("en", "es")
 
-# Windows LANGID primary-language ids we can serve (see `system_language()`).
-_WINDOWS_PRIMARY_LANGUAGES = {0x0A: "es"}
+# A key holds either the finished string or, when the text depends on a count,
+# the plural forms it can take (`one` for a count of one, `many` otherwise).
+Entry = str | dict[str, str]
+_PLURAL_FORMS = ("one", "many")
 
-TRANSLATIONS: dict[str, dict[str, str]] = {
-    "en": {
-        "badge_ready": "Ready",
-        "badge_working": "Working",
-        "badge_searching": "Searching",
-        "badge_reading": "Reading album",
-        "badge_confirm": "Confirm",
-        "badge_downloading": "Downloading",
-        "badge_done": "Done",
-        "badge_failed": "Failed",
-        "badge_input": "Waiting for input",
-        "badge_results": "Results",
-        "folder_none": "no folder chosen",
-        "change_folder": "Change folder",
-        "format": "Format",
-        "format_flac": "FLAC (lossless)",
-        "format_mp3": "MP3 (320 kbps)",
-        "format_m4a": "M4A (AAC 320 kbps)",
-        "format_wav": "WAV (PCM)",
-        "query_label": "Song, album or link",
-        "query_hint": "e.g. Pink Floyd - The Wall",
-        "search": "Search",
-        "status_start": "Search for a track or an album to get started.",
-        "status_need_input": "Enter a song, an album or a link first.",
-        "status_need_folder": "Choose a download folder first.",
-        "status_searching": 'Searching for "{query}" ...',
-        "status_results_one": "1 result found. Pick the track or album you want.",
-        "status_results_many": "{count} results found. Pick the track or album you want.",
-        "status_reading_album": 'Reading the track list of "{title}" ...',
-        "status_confirm": "Check the track list, then confirm the download.",
-        "status_downloading": "downloading {size} ...",
-        "status_progress": "{percent}% - {done} of {total} at {speed}/s - ETA {eta}",
-        "status_extracting": "extracting {format} with ffmpeg ...",
-        "status_saved_track": 'Saved "{title}" as {format} in {path}',
-        "status_saved_album": "Saved {count} of {total} tracks to {folder}",
-        "status_error": "Error: {message}",
-        "subtitle_album": "Album",
-        "subtitle_tracks_one": "1 track",
-        "subtitle_tracks_many": "{count} tracks",
-        "subtitle_track": "Track",
-        "tooltip_download_album": "Download album",
-        "tooltip_download_track": "Download track",
-        "first_run_title": "Where should your music go?",
-        "first_run_body": "Downloads are saved in one folder per album. "
-        "You can change this later.",
-        "first_run_suggested": "Suggested: {path}",
-        "first_run_use_suggested": "Use suggested folder",
-        "first_run_choose": "Choose folder ...",
-        "picker_title": "Choose where downloads are saved",
-        "album_folder": "Folder: {path}",
-        "album_more": "... and {count} more",
-        "cancel": "Cancel",
-        "download_album": "Download album",
-    },
-    "es": {
-        "badge_ready": "Listo",
-        "badge_working": "Trabajando",
-        "badge_searching": "Buscando",
-        "badge_reading": "Leyendo álbum",
-        "badge_confirm": "Confirmar",
-        "badge_downloading": "Descargando",
-        "badge_done": "Completado",
-        "badge_failed": "Falló",
-        "badge_input": "Falta información",
-        "badge_results": "Resultados",
-        "folder_none": "sin carpeta elegida",
-        "change_folder": "Cambiar carpeta",
-        "format": "Formato",
-        "format_flac": "FLAC (sin pérdida)",
-        "format_mp3": "MP3 (320 kbps)",
-        "format_m4a": "M4A (AAC 320 kbps)",
-        "format_wav": "WAV (PCM)",
-        "query_label": "Canción, álbum o enlace",
-        "query_hint": "p. ej. Pink Floyd - The Wall",
-        "search": "Buscar",
-        "status_start": "Busca una canción o un álbum para empezar.",
-        "status_need_input": "Escribe primero una canción, un álbum o un enlace.",
-        "status_need_folder": "Elige primero una carpeta de descargas.",
-        "status_searching": 'Buscando "{query}" ...',
-        "status_results_one": "1 resultado. Elige la canción o el álbum que quieres.",
-        "status_results_many": "{count} resultados. Elige la canción o el álbum que quieres.",
-        "status_reading_album": 'Leyendo la lista de temas de "{title}" ...',
-        "status_confirm": "Revisa la lista de temas y confirma la descarga.",
-        "status_downloading": "descargando {size} ...",
-        "status_progress": "{percent}% - {done} de {total} a {speed}/s - quedan {eta}",
-        "status_extracting": "extrayendo {format} con ffmpeg ...",
-        "status_saved_track": 'Guardado "{title}" como {format} en {path}',
-        "status_saved_album": "Guardados {count} de {total} temas en {folder}",
-        "status_error": "Error: {message}",
-        "subtitle_album": "Álbum",
-        "subtitle_tracks_one": "1 tema",
-        "subtitle_tracks_many": "{count} temas",
-        "subtitle_track": "Canción",
-        "tooltip_download_album": "Descargar álbum",
-        "tooltip_download_track": "Descargar canción",
-        "first_run_title": "¿Dónde guardamos tu música?",
-        "first_run_body": "Cada álbum se guarda en su propia carpeta. "
-        "Puedes cambiarlo cuando quieras.",
-        "first_run_suggested": "Sugerida: {path}",
-        "first_run_use_suggested": "Usar carpeta sugerida",
-        "first_run_choose": "Elegir carpeta ...",
-        "picker_title": "Elige dónde se guardan las descargas",
-        "album_folder": "Carpeta: {path}",
-        "album_more": "... y {count} más",
-        "cancel": "Cancelar",
-        "download_album": "Descargar álbum",
-    },
-}
+
+def locales_dir() -> Path:
+    """Directory holding the locale files; inside the bundle once frozen."""
+    return bundle.locales_dir()
+
+
+@lru_cache(maxsize=1)
+def available_languages() -> tuple[str, ...]:
+    """Codes with a locale file on disk, the default language first."""
+    if not locales_dir().is_dir():
+        return ()
+    codes = {
+        path.stem
+        for path in locales_dir().glob("*.json")
+        if not path.name.startswith(("_", "."))
+    }
+    return tuple(sorted(codes, key=lambda code: (code != DEFAULT_LANGUAGE, code)))
+
+
+@lru_cache(maxsize=None)
+def catalog(language: str) -> dict[str, Entry]:
+    """Strings of one language; empty (and reported) when its file is unusable."""
+    path = locales_dir() / f"{language}.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        _warn(f"{path} is missing; using {DEFAULT_LANGUAGE} instead")
+        return {}
+    except ValueError as error:
+        _warn(f"{path} is not valid JSON ({error}); using {DEFAULT_LANGUAGE} instead")
+        return {}
+    if not isinstance(raw, dict):
+        _warn(f"{path} must hold a JSON object mapping keys to strings")
+        return {}
+    return {key: entry for key, entry in raw.items() if _valid(key, entry, path)}
+
+
+def resolve(language: str | None) -> str:
+    """Code of the locale file serving `language`; English when none does."""
+    if not language:
+        return DEFAULT_LANGUAGE
+    wanted = _normalize(language)
+    codes = available_languages()
+    for code in codes:
+        if _normalize(code) == wanted:
+            return code
+    # A regional variant falls back to its base language: es-AR is served by
+    # es.json, and pt is served by pt-BR.json.
+    for code in codes:
+        if _primary(code) == _primary(wanted):
+            return code
+    return DEFAULT_LANGUAGE
 
 
 def system_language() -> str:
@@ -130,47 +102,146 @@ def system_language() -> str:
     if sys.platform == "win32":
         code = _windows_language()
         if code:
-            return code
+            return _primary(code)
     for variable in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
         value = os.environ.get(variable)
         if not value or value in ("C", "POSIX"):
             continue
         # "es_ES.UTF-8" / "es-AR" / "es:en" all mean Spanish
-        code = value.split(":")[0].split(".")[0].replace("-", "_").split("_")[0]
+        code = _primary(value)
         if code:
-            return code.lower()
+            return code
     return DEFAULT_LANGUAGE
 
 
 def _windows_language() -> str | None:
+    """Windows' user UI language (`es_ES`), or None when it cannot be read."""
     try:
         import ctypes
+        import locale
 
         langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
     except Exception:  # noqa: BLE001 - never let locale detection break startup
         return None
-    return _WINDOWS_PRIMARY_LANGUAGES.get(langid & 0x3FF, "en")
+    # Neutral ids (0x0A for Spanish, whose regions are 0x0C0A, 0x080A, ...) are
+    # absent from the table; any region of the same language answers the
+    # question just as well, since `resolve()` matches on the primary subtag.
+    return locale.windows_locale.get(langid) or next(
+        (
+            name
+            for identifier, name in locale.windows_locale.items()
+            if (identifier & 0x3FF) == (langid & 0x3FF)
+        ),
+        None,
+    )
+
+
+def _normalize(code: str) -> str:
+    """Comparable form of a language code, from `LANG`-style values included."""
+    return code.strip().split(":")[0].split(".")[0].replace("_", "-").lower()
+
+
+def _primary(code: str) -> str:
+    """`es_ES` -> `es`: the language a regional variant also answers to."""
+    return _normalize(code).split("-")[0]
+
+
+def _valid(key: str, entry: object, path: Path) -> bool:
+    """Keep a well-formed entry; a broken one is dropped and reported."""
+    if isinstance(entry, str):
+        return True
+    if (
+        isinstance(entry, dict)
+        and entry
+        and all(form in _PLURAL_FORMS for form in entry)
+        and all(isinstance(text, str) for text in entry.values())
+    ):
+        return True
+    _warn(
+        f"{path}: {key!r} must be a string, or an object with "
+        f"{' and '.join(_PLURAL_FORMS)} strings"
+    )
+    return False
+
+
+def _warn(message: str) -> None:
+    """Complain on stderr, which a windowed build may not have."""
+    if sys.stderr is not None:
+        print(f"i18n: {message}", file=sys.stderr)
 
 
 class Translator:
-    """Looks up UI strings, falling back to English for missing entries."""
+    """Renders UI strings for one language, falling back to English."""
 
     def __init__(self, language: str | None = None) -> None:
-        requested = (language or system_language()).lower()
-        self.language = requested if requested in TRANSLATIONS else DEFAULT_LANGUAGE
+        self.language = resolve(language or system_language())
 
     def __call__(self, key: str, **values: object) -> str:
-        return self._lookup(key).format(**values) if values else self._lookup(key)
+        text = self._text(key)
+        return text.format(**values) if values else text
 
     def plural(self, key: str, count: int, **values: object) -> str:
-        """Singular for a count of one, plural otherwise (`<key>_one`/`_many`)."""
-        form = f"{key}_{'one' if count == 1 else 'many'}"
-        if self._lookup(form, fallback=False) is None:
-            form = key
-        return self._lookup(form).format(count=count, **values)
+        """The phrase for `count`, falling back to the `many` form."""
+        entry = self._entry(key)
+        if isinstance(entry, dict):
+            text = (
+                entry.get("one" if count == 1 else "many")
+                or entry.get("many")
+                or entry.get("one")
+            )
+        else:
+            # A translation may skip the forms and spell `{count}` out itself.
+            text = key if entry is None else entry
+        return text.format(count=count, **values)
 
-    def _lookup(self, key: str, fallback: bool = True) -> str | None:
-        text = TRANSLATIONS[self.language].get(key)
-        if text is None and fallback:
-            text = TRANSLATIONS[DEFAULT_LANGUAGE].get(key)
-        return text if text is not None else (key if fallback else None)
+    def _entry(self, key: str) -> Entry | None:
+        """`key` in this language, else in English, else None."""
+        entry = catalog(self.language).get(key)
+        return catalog(DEFAULT_LANGUAGE).get(key) if entry is None else entry
+
+    def _text(self, key: str) -> str:
+        entry = self._entry(key)
+        if isinstance(entry, dict):
+            # Addressed without a count, a plural key reads as the many form.
+            entry = entry.get("many") or entry.get("one")
+        return key if entry is None else entry
+
+
+def _report(code: str, reference: dict[str, Entry]) -> list[str]:
+    """Everything wrong with one locale file, as printable lines."""
+    if code not in available_languages():
+        return [f"locales/{code}.json not found"]
+    entries = catalog(code)
+    missing = sorted(key for key in reference if key not in entries)
+    unknown = sorted(key for key in entries if key not in reference)
+    problems = []
+    if missing:
+        problems.append(f"missing {len(missing)}: {', '.join(missing)}")
+    if unknown:
+        problems.append(f"unknown {len(unknown)}: {', '.join(unknown)}")
+    return problems
+
+
+def main(argv: list[str]) -> int:
+    """Check locale files against English; non-zero when one is incomplete."""
+    reference = catalog(DEFAULT_LANGUAGE)
+    if not reference:
+        print(f"locales/{DEFAULT_LANGUAGE}.json is missing", file=sys.stderr)
+        return 1
+    codes = [_normalize(code) for code in argv[1:]] or [
+        code for code in available_languages() if code != DEFAULT_LANGUAGE
+    ]
+    if not codes:
+        print(f"no locale files besides {DEFAULT_LANGUAGE}.json; nothing to check")
+        return 0
+    incomplete = False
+    for code in codes:
+        problems = _report(code, reference)
+        incomplete = incomplete or bool(problems)
+        detail = "; ".join(problems) or f"all {len(reference)} keys present"
+        print(f"{code}: {len(catalog(code))} keys - {detail}")
+    return 1 if incomplete else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

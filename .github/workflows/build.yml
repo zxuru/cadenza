@@ -1,0 +1,133 @@
+name: build
+
+# Every artifact is built on the machine that can build it: PyInstaller cannot
+# cross-compile a desktop executable, and neither can `flet build` - its own
+# platform matrix allows windows on Windows, macos on macOS and linux on Linux
+# only. Android is the one target that builds anywhere, so an APK comes from a
+# Linux runner, where `flet build` installs its own Flutter, JDK 17 and Android
+# SDK.
+#
+# iOS and the web are deliberately not built; BUILD.md says why.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    name: desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, artifact: linux-x86_64.tar.gz }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, artifact: linux-arm64.tar.gz }
+          - { name: windows-x86_64, os: windows-latest, artifact: dist/Cadenza.exe }
+          - { name: macos-arm64, os: macos-latest, artifact: macos-arm64.zip }
+          - { name: macos-x86_64, os: macos-15-intel, artifact: macos-x86_64.zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build.py
+
+      # The frozen build checks itself: ffmpeg, the JavaScript runtime, the
+      # yt-dlp extractors, the network path, and the tags and cover art it
+      # writes into the file.
+      - name: Verify
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   dist/Cadenza.app/Contents/MacOS/Cadenza --selftest ;;
+            Windows) dist/Cadenza.exe --selftest ;;
+            *)       dist/Cadenza --selftest ;;
+          esac
+
+      # A tarball keeps the executable bit; `ditto` keeps the permissions and
+      # symlinks an .app bundle is made of.
+      - name: Package
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)
+              ditto -c -k --sequesterRsrc --keepParent dist/Cadenza.app \
+                "${{ matrix.name }}.zip"
+              ;;
+            Linux)
+              tar -czf "${{ matrix.name }}.tar.gz" -C dist Cadenza
+              ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.artifact }}
+
+  android:
+    name: android (apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # Flutter, the JDK and the Android SDK are ~2 GB and change only when
+      # pyproject.toml does: the target SDK and the app's Android dependencies
+      # both live there.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/flutter
+            ~/java
+            ~/Android/sdk
+          key: flet-toolchain-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install Flet
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "flet[all]==1.0.0"
+
+      # --yes answers the prompts that install Flutter, the JDK and the SDK.
+      - name: Build APK
+        run: flet build apk --yes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: build/**/*.apk
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: [desktop, android]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Attach every artifact to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "Cadenza $GITHUB_REF_NAME" --generate-notes \
+            artifacts/*/*

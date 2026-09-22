@@ -20,13 +20,29 @@ def config_dir() -> Path:
         base = os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming"
     elif sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
+    elif is_mobile():
+        # A phone has no home directory of one's own: the runtime hands the app
+        # a private data directory and that is where everything it stores goes.
+        base = Path(os.environ.get("FLET_APP_STORAGE_DATA") or Path.home())
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
     return Path(base) / APP_DIR_NAME
 
 
+def is_mobile() -> bool:
+    """True on Android and iOS, where there is no desktop-style home directory."""
+    return (
+        os.environ.get("FLET_PLATFORM") in ("android", "ios")
+        or sys.platform in ("android", "ios")
+    )
+
+
 def suggested_music_dir() -> Path:
     """Starting point for the folder picker: the user's music folder if there is one."""
+    if is_mobile():
+        # No ~/Music to speak of, and the app's own storage is the only place
+        # it may write without a permission the user has to grant by hand.
+        return config_dir()
     for candidate in (_xdg_music_dir(), Path.home() / "Music"):
         if candidate is not None and candidate.is_dir():
             return candidate

@@ -1,0 +1,52 @@
+# Build metadata for the Flet toolchain (`flet build`, see BUILD.md).
+#
+# The desktop artifacts are frozen with `build.py` (PyInstaller), so the
+# dependencies below are the ones a `flet build` bundle carries: the `android`
+# target is the only one that uses them. imageio-ffmpeg is deliberately absent
+# - its wheel holds a host ffmpeg binary (linux/windows/macos), never an
+# Android one - and comes from requirements.txt for the frozen desktop builds.
+
+[project]
+name = "cadenza"
+version = "1.0.0"
+description = "Search, preview and download music"
+requires-python = ">=3.12"
+dependencies = [
+    "flet>=1.0,<2",
+    "yt-dlp",
+    "mutagen",
+]
+
+[tool.flet]
+org = "cl.zxuru"
+product = "Cadenza"
+company = "zxuru"
+copyright = "Cadenza"
+build_number = 1
+
+# Only the app's own files are packaged: the virtualenv, the two build trees
+# and the docs are build-time material and must not ride into an APK.
+[tool.flet.app]
+exclude = [
+    ".git",
+    ".github",
+    ".gitignore",
+    ".venv",
+    "__pycache__",
+    "downloads",
+    "dist",
+    "build",
+    "packaging",
+    "BUILD.md",
+    "build.py",
+    "pyproject.toml",
+    "requirements.txt",
+]
+
+[tool.flet.android]
+# Audio conversion without an ffmpeg executable. Android will not run a binary
+# the app ships, so the APK carries ffmpeg's *libraries* instead and `transcode`
+# drives them through PyAV in-process; Pillow crops the video frame that stands
+# in for cover art until a music database supplies one. Both come from Flet's
+# own wheel index for Android.
+dependencies = ["av", "pillow"]

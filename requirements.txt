@@ -4,8 +4,9 @@ flet>=1.0,<2
 # Engine: extractor fixes land constantly, so leave this unpinned and update often.
 yt-dlp
 
-# Cover art: yt-dlp writes the picture into flac files with this (mp3 and m4a go
-# through ffmpeg). Without it a flac download fails outright.
+# Tags and cover art: yt-dlp writes the picture into flac files with this (mp3
+# and m4a go through ffmpeg), and `metadata.py` imports it to write the tags a
+# music database gave us. Without it a flac download fails outright.
 mutagen
 
 # Optional fallback: ships a static ffmpeg binary, used only when `ffmpeg`

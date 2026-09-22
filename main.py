@@ -13,7 +13,9 @@ import sys
 from pathlib import Path
 
 import flet as ft
+from flet.utils.platform_utils import is_android, is_mobile
 
+import bundle
 import engine
 import i18n
 import settings as config
@@ -67,8 +69,8 @@ def _read_tags(path: Path) -> dict[str, str]:
     return tags
 
 
-def _read_art(path: Path) -> str | None:
-    """Describe the cover picture stored in `path`, or None when there is none."""
+def _read_art(path: Path) -> tuple[str, int, int] | None:
+    """Kind and pixel size of the cover picture in `path`, or None when there is none."""
     import subprocess
 
     ffmpeg = engine.find_ffmpeg()
@@ -81,9 +83,9 @@ def _read_art(path: Path) -> str | None:
         check=False,
     )
     for line in result.stderr.splitlines():
-        match = re.search(r"Video: (\w+).*?(\d+x\d+).*\(attached pic\)", line)
+        match = re.search(r"Video: (\w+).*?(\d+)x(\d+).*\(attached pic\)", line)
         if match:
-            return f"{match.group(1)} {match.group(2)}"
+            return match.group(1), int(match.group(2)), int(match.group(3))
     return None
 
 
@@ -140,7 +142,19 @@ def selftest() -> int:
                 )
                 report("tags", shown or "none", bool(tags.get("title") and tags.get("artist")))
                 art = _read_art(tracks[0].path)
-                report("cover art", art or "none", art is not None)
+                if art is None:
+                    report("cover art", "none", False)
+                else:
+                    # Either the square cover a music database served, or the
+                    # video thumbnail cropped to 4:3. What fails here is a
+                    # build that embeds YouTube's 16:9 frame unmodified.
+                    kind, width, height = art
+                    ratio = width / height
+                    report(
+                        "cover art",
+                        f"{kind} {width}x{height}",
+                        abs(ratio - 4 / 3) < 0.01 or abs(ratio - 1) < 0.01,
+                    )
         except Exception as err:  # noqa: BLE001
             report("download", f"FAILED: {err}", False)
 
@@ -152,31 +166,34 @@ def selftest() -> int:
     return 0 if ok else 1
 
 
-def _bundled_assets_dir() -> str | None:
-    """Assets directory next to the app, or beside the sources when not frozen."""
-    base = getattr(sys, "_MEIPASS", None)
-    candidate = (Path(base) if base else Path(__file__).resolve().parent) / "assets"
-    return str(candidate) if candidate.is_dir() else None
-
-
 def main(page: ft.Page) -> None:
     t = i18n.Translator()
+
+    # A phone or a tablet has no window to size, reveal or give an icon: every
+    # `page.window` property below is a desktop-client concern, and a browser
+    # tab has no window of its own either.
+    desktop = not page.web and not is_mobile()
 
     page.title = config.APP_NAME
     page.theme_mode = ft.ThemeMode.DARK
     page.padding = 20
-    # The client opens its window at its own default size, so start hidden and
-    # reveal it once the real geometry is known - otherwise it visibly resizes.
-    page.window.width, page.window.height = WINDOW_SIZE
-    page.window.min_width, page.window.min_height = WINDOW_MIN_SIZE
-    # Windows takes the window/taskbar icon from here; Linux uses the app id
-    # plus the desktop entry (see packaging/).
-    page.window.icon = "icon.ico"
+    if desktop:
+        # The client opens its window at its own default size, so start hidden
+        # and reveal it once the real geometry is known - otherwise it visibly
+        # resizes.
+        page.window.width, page.window.height = WINDOW_SIZE
+        page.window.min_width, page.window.min_height = WINDOW_MIN_SIZE
+        # Windows takes the window/taskbar icon from here; Linux uses the app
+        # id plus the desktop entry (see packaging/).
+        page.window.icon = "icon.ico"
 
     state = config.Settings.load()
 
     file_picker = ft.FilePicker()
     page.services.append(file_picker)
+    # Mobile only: the directory the system gives this app for its files.
+    storage_paths = ft.StoragePaths()
+    page.services.append(storage_paths)
 
     badge_label = ft.Text(
         t("badge_ready"), size=12, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_400
@@ -188,12 +205,21 @@ def main(page: ft.Page) -> None:
         bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREY_400),
     )
 
-    folder_text = ft.Text(size=12, color=ft.Colors.GREY_400)
+    folder_text = ft.Text(size=12, color=ft.Colors.GREY_400, max_lines=1)
+    if not desktop:
+        # A phone puts a long path next to a button: let the path ellipsize
+        # instead of pushing the button off the screen.
+        folder_text.expand = True
+        folder_text.overflow = ft.TextOverflow.ELLIPSIS
+    # A phone has no ffmpeg executable: only the formats its bundled encoder
+    # can produce are offered, so the dropdown never promises a conversion that
+    # would fail halfway through a download.
+    formats = engine.available_formats()
     format_dropdown = ft.Dropdown(
         label=t("format"),
         width=200,
-        value=state.format if state.format in engine.FORMATS else engine.DEFAULT_FORMAT,
-        options=[ft.DropdownOption(key, t(f"format_{key}")) for key in engine.FORMATS],
+        value=state.format if state.format in formats else engine.DEFAULT_FORMAT,
+        options=[ft.DropdownOption(key, t(f"format_{key}")) for key in formats],
         on_select=lambda _: remember_format(),
     )
 
@@ -298,6 +324,13 @@ def main(page: ft.Page) -> None:
             render_status(" · ".join(parts), ft.Colors.BLUE_200)
             return
 
+        if progress.stage == "tagging":
+            # The audio is on disk; the tags are being looked up in a database.
+            progress_bar.value = None
+            parts.append(t("status_tagging"))
+            render_status(" · ".join(parts), ft.Colors.BLUE_200)
+            return
+
         progress_bar.value = (progress.percent or 0) / 100
         if progress.percent is None:
             parts.append(t("status_downloading", size=format_bytes(progress.downloaded_bytes)))
@@ -382,10 +415,15 @@ def main(page: ft.Page) -> None:
         )
 
     async def choose_folder(first_run: bool = False) -> None:
-        chosen = await file_picker.get_directory_path(
-            dialog_title=t("picker_title"),
-            initial_directory=str(state.download_root or config.suggested_music_dir()),
-        )
+        try:
+            chosen = await file_picker.get_directory_path(
+                dialog_title=t("picker_title"),
+                initial_directory=str(
+                    state.download_root or config.suggested_music_dir()
+                ),
+            )
+        except Exception:  # noqa: BLE001 - a platform without a directory picker
+            chosen = None
         if not chosen:
             if first_run and state.download_root is None:
                 show_first_run_dialog()
@@ -394,11 +432,45 @@ def main(page: ft.Page) -> None:
             page.pop_dialog()
         apply_folder(Path(chosen))
 
+    async def use_system_folder() -> None:
+        """First run on a phone: download where the system lets the app write.
+
+        Mobile systems hand an app one directory and require a permission the
+        user grants in settings for anything else, and there is no free-form
+        directory picker to ask with - so the app takes the directory it is
+        given and shows it in the header. "Change folder" can still move it
+        somewhere the user picked.
+        """
+        try:
+            if is_android():
+                root = await storage_paths.get_external_storage_directory()
+            else:
+                root = await storage_paths.get_application_documents_directory()
+        except Exception:  # noqa: BLE001 - the service is best effort
+            root = None
+        if not root:
+            render_error(t("status_need_folder"))
+            return
+        apply_folder(Path(root))
+
     def apply_folder(root: Path) -> None:
+        if not root.is_dir() or not os.access(root, os.W_OK):
+            # Android hands out content:// trees and read-only paths that look
+            # like directories; a download there would fail halfway through.
+            render_status(t("status_folder_unusable", path=root), ft.Colors.AMBER_300)
+            return
         state.download_root = root
         state.save()
         render_folder()
         page.update()
+
+    def ensure_folder() -> None:
+        """Ask for a download folder when there is none yet."""
+        render_status(t("status_need_folder"), ft.Colors.AMBER_300)
+        if desktop:
+            show_first_run_dialog()
+        else:
+            page.run_task(use_system_folder)
 
     def remember_format() -> None:
         state.format = format_dropdown.value or engine.DEFAULT_FORMAT
@@ -559,8 +631,7 @@ def main(page: ft.Page) -> None:
             render_status(t("status_need_input"), ft.Colors.AMBER_300)
             return
         if state.download_root is None:
-            render_status(t("status_need_folder"), ft.Colors.AMBER_300)
-            show_first_run_dialog()
+            ensure_folder()
             return
         page.run_task(run_search, query)
 
@@ -572,9 +643,43 @@ def main(page: ft.Page) -> None:
         else:
             page.run_task(run_download, result.url, None)
 
+    async def reveal_window() -> None:
+        """Show the window, at the size set above, once the client is up.
+
+        `FLET_APP_HIDDEN` starts the window hidden, and the client syncs its
+        own state back as soon as it connects - hidden, at the client's default
+        size - overwriting every property set above. Asking for the window only
+        after the client is ready is what makes it appear, and it appears at
+        the geometry it was given, without a visible resize. A page in a
+        browser tab, or a phone, has no window of its own to reveal.
+        """
+        if not desktop:
+            return
+        await page.window.wait_until_ready_to_show()
+        page.window.visible = True
+        page.update()
+
     # ---------------------------------------------------------------------- page
 
     render_folder()
+    folder_row: list[ft.Control] = [
+        ft.Icon(ft.Icons.FOLDER_OPEN, size=16, color=ft.Colors.GREY_400),
+        folder_text,
+        ft.TextButton(t("change_folder"), on_click=lambda _: page.run_task(choose_folder)),
+    ]
+    if desktop:
+        # One line, the desktop way: the folder on the left, the format on the right.
+        folder_row += [ft.Container(expand=True), format_dropdown]
+        settings_rows = [ft.Row(folder_row, vertical_alignment=ft.CrossAxisAlignment.CENTER)]
+    else:
+        # A phone has no room for both, so the format gets its own line and
+        # stretches across it, and the path takes the room the button leaves.
+        format_dropdown.width = None
+        settings_rows = [
+            ft.Row(folder_row, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ft.Row([format_dropdown]),
+        ]
+
     page.add(
         ft.Row(
             [
@@ -585,16 +690,7 @@ def main(page: ft.Page) -> None:
             ],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        ft.Row(
-            [
-                ft.Icon(ft.Icons.FOLDER_OPEN, size=16, color=ft.Colors.GREY_400),
-                folder_text,
-                ft.TextButton(t("change_folder"), on_click=lambda _: page.run_task(choose_folder)),
-                ft.Container(expand=True),
-                format_dropdown,
-            ],
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
+        *settings_rows,
         ft.Row([query_field, search_btn], spacing=12),
         ft.Divider(),
         results_list,
@@ -603,10 +699,14 @@ def main(page: ft.Page) -> None:
     )
 
     if state.download_root is None:
-        show_first_run_dialog()
+        # Desktop asks where to put the music; a phone is told.
+        if desktop:
+            show_first_run_dialog()
+        else:
+            page.run_task(use_system_folder)
 
     # Everything is laid out: show the window at its real size.
-    page.window.visible = True
+    page.run_task(reveal_window)
 
 
 if __name__ == "__main__":
@@ -616,4 +716,7 @@ if __name__ == "__main__":
         # Gives the client window a stable app id, so a desktop entry (and thus
         # the app icon) can be matched by the shell.
         os.environ.setdefault("FLET_APP_ID", config.APP_ID)
-    ft.run(main, view=ft.AppView.FLET_APP_HIDDEN, assets_dir=_bundled_assets_dir())
+    # The hidden-until-ready dance is for the desktop client; a bundle built by
+    # `flet build` (Android) embeds the app and shows it itself.
+    view = None if is_mobile() else ft.AppView.FLET_APP_HIDDEN
+    ft.run(main, view=view, assets_dir=bundle.assets_dir())
