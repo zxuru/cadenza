@@ -108,6 +108,14 @@ def selftest() -> int:
     ffmpeg = engine.find_ffmpeg()
     report("ffmpeg", ffmpeg or "NOT FOUND", ffmpeg is not None)
     report("js runtimes", ", ".join(engine.find_js_runtimes()))
+    try:
+        # Bundled through `--hidden-import`: yt-dlp needs it to put cover art
+        # into FLAC files, and nothing imports it directly.
+        import mutagen
+
+        report("mutagen", mutagen.version_string)
+    except ImportError as err:
+        report("mutagen", f"MISSING ({err})", False)
 
     try:
         results = engine.search("Kevin MacLeod Sneaky Snitch", limit=2)

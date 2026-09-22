@@ -48,8 +48,8 @@ icon instead of the `.ico` used on Windows.
 
 From a directory other than the project (so nothing resolves from the sources),
 run the app's headless self-test — it exercises the bundled ffmpeg, the
-JavaScript runtime, the yt-dlp extractors, the network path and the tags
-written into the file:
+JavaScript runtime, the yt-dlp extractors, the network path and the tags and
+cover art written into the file:
 
 ```bash
 mkdir -p /tmp/frozen-selftest && cd /tmp/frozen-selftest
@@ -59,11 +59,12 @@ mkdir -p /tmp/frozen-selftest && cd /tmp/frozen-selftest
 A real run, ~9 s:
 
 ```
-ffmpeg       /tmp/_MEI0003b74cPivChy/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
+ffmpeg       /tmp/_MEI0003c9de6j8r0e/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
 js runtimes  deno
 search       2 result(s): Sneaky Snitch (Kevin MacLeod) - Background Music (HD)
-download     Sneaky Snitch (Kevin MacLeod) - Background Music (HD).mp3 (5.2 MiB)
+download     Sneaky Snitch (Kevin MacLeod) - Background Music (HD).flac (21.9 MiB)
 tags         artist=Gaming Sound FX · genre=People & Blogs · date=20150625
+cover art    png 1280x720
 ```
 
 To prove the executable really is standalone, run it with a stripped
@@ -138,6 +139,7 @@ partially and refined later.
 | `yt_dlp` | `--collect-all yt_dlp` | Extractors are imported lazily, so static analysis alone misses them and searches would fail. |
 | `imageio_ffmpeg` | PyInstaller hook (`pyinstaller-hooks-contrib`, a PyInstaller dependency) + `--hidden-import imageio_ffmpeg.binaries` | Ships the ~79 MB static ffmpeg used when no system `ffmpeg` is on `PATH`; the package is reached via `importlib.resources` and is never imported directly. |
 | Deno | `--add-binary` after downloading the pinned release archive and verifying its published SHA-256 | yt-dlp needs a JavaScript runtime to decipher YouTube stream URLs; without one some tracks return HTTP 403. |
+| `mutagen` | `--hidden-import mutagen` (it is reached through yt-dlp's reader/writer registry, not a direct import) | yt-dlp uses it to write the cover picture into FLAC files; without it those downloads fail. |
 | `assets/` | `--add-data` | Window icon (Windows) and the source SVG for the icon. |
 
 ### The Flet desktop client
