@@ -1,5 +1,8 @@
-# Flet 1.0 UI API (ft.run, ft.Colors, ft.Icons, page.window, ...)
-flet>=1.0,<2
+# Flet 1.0 UI API (ft.run, ft.Colors, ft.Icons, page.window, ...), plus the
+# desktop client `flet_desktop`: the frozen app launches it as a separate
+# process, and build.py stages its archive into the executable. `flet_web` is
+# deliberately not asked for - it is only used by the browser view.
+flet[desktop]>=1.0,<2
 
 # Engine: extractor fixes land constantly, so leave this unpinned and update often.
 yt-dlp

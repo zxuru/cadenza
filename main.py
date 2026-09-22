@@ -213,12 +213,18 @@ def main(page: ft.Page) -> None:
         folder_text.overflow = ft.TextOverflow.ELLIPSIS
     # A phone has no ffmpeg executable: only the formats its bundled encoder
     # can produce are offered, so the dropdown never promises a conversion that
-    # would fail halfway through a download.
+    # would fail halfway through a download. Nothing at all can be produced
+    # when neither ffmpeg nor the in-process converter is present; the dropdown
+    # then simply holds no choice.
     formats = engine.available_formats()
     format_dropdown = ft.Dropdown(
         label=t("format"),
         width=200,
-        value=state.format if state.format in formats else engine.DEFAULT_FORMAT,
+        value=(
+            state.format
+            if state.format in formats
+            else engine.DEFAULT_FORMAT if engine.DEFAULT_FORMAT in formats else None
+        ),
         options=[ft.DropdownOption(key, t(f"format_{key}")) for key in formats],
         on_select=lambda _: remember_format(),
     )

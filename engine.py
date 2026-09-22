@@ -303,15 +303,14 @@ def download(
         # Nothing to spawn: yt-dlp saves the stream as it comes and the
         # conversion happens in this process afterwards (`_convert_downloads`),
         # so none of its postprocessors - every one of them an ffmpeg run - are
-        # configured. The thumbnail is still worth downloading: it stands in
-        # for a cover until a music database supplies one.
+        # configured. The thumbnail is still worth downloading: the video frame
+        # stands in for a cover until a music database supplies one, and a
+        # container that cannot hold a picture goes without, exactly as it does
+        # on the ffmpeg path.
         ydl_opts = _base_opts() | {
             "format": "bestaudio/best",
             "outtmpl": outtmpl,
             "progress_hooks": [_make_progress_hook(progress_callback)],
-            # The video frame stands in for a cover until a music database
-            # supplies one; a container that cannot hold a picture goes
-            # without, here as it does on the ffmpeg path.
             "writethumbnail": target_format in ART_FORMATS,
         } | extra
 
