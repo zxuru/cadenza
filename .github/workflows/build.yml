@@ -13,6 +13,9 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # A commit that only rewrites prose does not need six runners; tag pushes
+    # are exempt from path filters, so a release still builds everything.
+    paths-ignore: ["**/*.md", "packaging/**"]
   workflow_dispatch:
 
 permissions:
@@ -47,15 +50,18 @@ jobs:
         run: python build.py
 
       # The frozen build checks itself: ffmpeg, the JavaScript runtime, the
-      # yt-dlp extractors, the network path, and the tags and cover art it
-      # writes into the file.
+      # yt-dlp extractors and the network path. The download itself is left out
+      # (--no-download): YouTube serves a CI runner's address "Sign in to
+      # confirm you're not a bot" on every video, which says nothing about the
+      # build. Run `--selftest` without that flag on a real machine - BUILD.md
+      # shows what a full run prints.
       - name: Verify
         shell: bash
         run: |
           case "${{ runner.os }}" in
-            macOS)   dist/Cadenza.app/Contents/MacOS/Cadenza --selftest ;;
-            Windows) dist/Cadenza.exe --selftest ;;
-            *)       dist/Cadenza --selftest ;;
+            macOS)   dist/Cadenza.app/Contents/MacOS/Cadenza --selftest --no-download ;;
+            Windows) dist/Cadenza.exe --selftest --no-download ;;
+            *)       dist/Cadenza --selftest --no-download ;;
           esac
 
       # A tarball keeps the executable bit; `ditto` keeps the permissions and

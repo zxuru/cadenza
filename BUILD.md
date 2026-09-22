@@ -28,7 +28,7 @@ python3 -m venv .venv
 .venv/bin/python build.py
 ```
 
-Produces `dist/Cadenza` — a single ELF file (~125 MB, ~80 s to build). Nothing
+Produces `dist/Cadenza` — a single ELF file (~130 MB, a minute or two to build). Nothing
 else has to be installed on the target machine: Python, ffmpeg, the Flet client
 and a JavaScript runtime are all inside.
 
@@ -165,10 +165,20 @@ The `cover art` line is either the square cover the database served or the
 video thumbnail cropped to 4:3, so a build that embeds YouTube's 16:9 frame
 unmodified fails the self-test instead of shipping covers that look stretched.
 
-To prove the executable really is standalone, run it with a stripped
-environment: if `js runtimes` still says `deno`, that Deno came out of the
-bundle, not from the machine, and the search/download that follow were solved
-with it:
+YouTube will not serve a CI runner: every video answers "Sign in to confirm
+you're not a bot", which says nothing about the build. Automatic builds
+therefore run the same check with `--no-download`, which stops after the
+search - the bundled ffmpeg, JavaScript runtime, mutagen, extractors and the
+network path are all still exercised:
+
+```bash
+/absolute/path/to/dist/Cadenza --selftest --no-download
+```
+
+To prove the executable really is standalone, run the full check with a
+stripped environment: if `js runtimes` still says `deno`, that Deno came out of
+the bundle, not from the machine, and the search and download that follow were
+solved with it:
 
 ```bash
 env -i PATH=/usr/bin:/bin HOME=/tmp/selftest-home \
@@ -235,7 +245,7 @@ is gone on reload. yt-dlp could not download, and nothing could convert.
 | Session | X11 or Wayland desktop | any | any | any |
 | Installed dependencies | none | none | none | none |
 | Network | required for search, download and the tag lookup | required | required | required |
-| Disk | ~125 MB for the executable, plus your music | ~125 MB, plus your music | ~125 MB, plus your music | ~230 MB for the APK, plus your music |
+| Disk | ~130 MB for the executable, plus your music | ~130 MB, plus your music | ~130 MB, plus your music | ~230 MB for the APK, plus your music |
 | Admin rights | not needed | not needed | not needed | not needed |
 
 The executable carries Python, ffmpeg, the Flet desktop client, a Deno
@@ -408,6 +418,7 @@ Windows (macOS gets `--windowed` too):
   --hidden-import mutagen \
   --exclude-module av \
   --exclude-module PIL \
+  --exclude-module flet_web \
   --add-binary "<staged>/deno:jsrt" \
   --add-data "<project>/assets:assets" \
   --add-data "<project>/locales:locales" \
@@ -418,13 +429,12 @@ Windows (macOS gets `--windowed` too):
 (`--add-data` uses `;` instead of `:` on Windows.) The staged payloads live in
 a temporary directory, not in `build/`: `--clean` wipes the work path before
 every build. `--noupx` keeps the result identical whether or not UPX happens to
-be installed. The two `--exclude-module` flags drop what only the in-process
-converter would need - and which the desktop never uses, an executable having
-its own ffmpeg: `PIL` in particular arrives in the build environment as a
-dependency of `flet-cli` and would add ~25 MB to every executable else. When
-the build finishes, the script inspects the executable's archive and fails if
-the client archive, ffmpeg, the Deno binary, the UI assets, a locale file or
-the yt-dlp extractors are missing.
+be installed. The three `--exclude-module` flags drop what a frozen desktop
+build never uses: the in-process converter's PyAV and Pillow (`flet-cli` drags
+Pillow into the build environment, and the executable has its own ffmpeg) and
+`flet_web`, the browser view's server. When the build finishes, the script
+inspects the executable's archive and fails if the client archive, ffmpeg, the
+Deno binary, the UI assets, a locale file or the yt-dlp extractors are missing.
 
 ## Notes
 
@@ -435,7 +445,7 @@ the yt-dlp extractors are missing.
 * **Settings** are read from `~/.config/Cadenza/config.json`
   (`%APPDATA%\Cadenza\config.json` on Windows) — nothing is written next to the
   executable.
-* **Single-file startup** costs an extra unpack of the whole bundle (~125 MB) on
+* **Single-file startup** costs an extra unpack of the whole bundle (~130 MB) on
   each run; that is inherent to `--onefile`. `--onedir` trades it for a folder
   of files if startup time matters more than tidiness.
 * **Antivirus** engines occasionally flag PyInstaller one-file builds; the

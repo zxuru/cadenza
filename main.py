@@ -89,13 +89,18 @@ def _read_art(path: Path) -> tuple[str, int, int] | None:
     return None
 
 
-def selftest() -> int:
+def selftest(download: bool = True) -> int:
     """Headless check of the bundled engine; `--selftest` runs it.
 
     Verifies a frozen build end to end: ffmpeg, the JavaScript runtime, the
     yt-dlp extractors, the network path, and the tags and cover art written
     into the file. Downloads the default format, so a build that cannot embed
     art is caught here instead of in the user's download folder.
+
+    `--no-download` stops before that download, for a machine YouTube will not
+    serve: a CI runner gets "Sign in to confirm you're not a bot" on every
+    video, while everything up to the search still runs. What is left out is
+    exactly what the file on disk proves.
     """
     import tempfile
 
@@ -129,34 +134,10 @@ def selftest() -> int:
     except Exception as err:  # noqa: BLE001 - report, do not crash
         report("search", f"FAILED: {err}", False)
     else:
-        try:
-            with tempfile.TemporaryDirectory() as tmp:
-                tracks = engine.download(results[0].url, engine.DEFAULT_FORMAT, Path(tmp))
-                size = tracks[0].path.stat().st_size
-                report("download", f"{tracks[0].path.name} ({format_bytes(size)})")
-                tags = _read_tags(tracks[0].path)
-                shown = " · ".join(
-                    f"{key}={tags[key]}"
-                    for key in ("artist", "album", "genre", "date")
-                    if tags.get(key)
-                )
-                report("tags", shown or "none", bool(tags.get("title") and tags.get("artist")))
-                art = _read_art(tracks[0].path)
-                if art is None:
-                    report("cover art", "none", False)
-                else:
-                    # Either the square cover a music database served, or the
-                    # video thumbnail cropped to 4:3. What fails here is a
-                    # build that embeds YouTube's 16:9 frame unmodified.
-                    kind, width, height = art
-                    ratio = width / height
-                    report(
-                        "cover art",
-                        f"{kind} {width}x{height}",
-                        abs(ratio - 4 / 3) < 0.01 or abs(ratio - 1) < 0.01,
-                    )
-        except Exception as err:  # noqa: BLE001
-            report("download", f"FAILED: {err}", False)
+        if not download:
+            report("download", "skipped (--no-download)")
+        else:
+            _selftest_download(results[0], report)
 
     text = "\n".join(lines)
     if sys.stdout is None:  # windowed builds have no console
@@ -164,6 +145,40 @@ def selftest() -> int:
     else:
         print(text)
     return 0 if ok else 1
+
+
+def _selftest_download(result: SearchResult, report) -> None:
+    """Download one track and check what was written into it."""
+    import tempfile
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tracks = engine.download(result.url, engine.DEFAULT_FORMAT, Path(tmp))
+            size = tracks[0].path.stat().st_size
+            report("download", f"{tracks[0].path.name} ({format_bytes(size)})")
+            tags = _read_tags(tracks[0].path)
+            shown = " · ".join(
+                f"{key}={tags[key]}"
+                for key in ("artist", "album", "genre", "date")
+                if tags.get(key)
+            )
+            report("tags", shown or "none", bool(tags.get("title") and tags.get("artist")))
+            art = _read_art(tracks[0].path)
+            if art is None:
+                report("cover art", "none", False)
+            else:
+                # Either the square cover a music database served, or the
+                # video thumbnail cropped to 4:3. What fails here is a build
+                # that embeds YouTube's 16:9 frame unmodified.
+                kind, width, height = art
+                ratio = width / height
+                report(
+                    "cover art",
+                    f"{kind} {width}x{height}",
+                    abs(ratio - 4 / 3) < 0.01 or abs(ratio - 1) < 0.01,
+                )
+    except Exception as err:  # noqa: BLE001
+        report("download", f"FAILED: {err}", False)
 
 
 def main(page: ft.Page) -> None:
@@ -717,7 +732,7 @@ def main(page: ft.Page) -> None:
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
-        raise SystemExit(selftest())
+        raise SystemExit(selftest(download="--no-download" not in sys.argv))
     if sys.platform.startswith("linux"):
         # Gives the client window a stable app id, so a desktop entry (and thus
         # the app icon) can be matched by the shell.

@@ -112,12 +112,20 @@ COLLECT_ALL = ("flet", "flet_desktop", "yt_dlp")
 # while writing the cover art, and no tag lookup can be written.
 HIDDEN_IMPORTS = ("imageio_ffmpeg.binaries", "mutagen")
 
-# The in-process converter (`transcode.py`) exists for a platform whose wheels
-# carry no ffmpeg - Android. A frozen desktop build always has one, so PyAV and
-# Pillow are left out rather than shipped unused: Pillow in particular arrives
-# in the build environment as a dependency of flet-cli, which is only there to
-# run the build, and adds ~25 MB to every executable.
-EXCLUDED_MODULES = ("av", "PIL")
+# What a frozen desktop build never needs, left out rather than shipped:
+#
+# * `transcode`'s in-process converter is for a platform whose wheels carry no
+#   ffmpeg - Android - and a desktop executable always has one. PyAV and
+#   Pillow come with it. (Pillow also arrives in the build environment as a
+#   dependency of flet-cli, which is only there to run the build.)
+# * `flet_web` is the browser view's runtime: the FastAPI/uvicorn server and
+#   the Pyodide assets, with fastapi, uvicorn, uvloop and pydantic behind it.
+#   A frozen build always runs the desktop client. (What lands in the
+#   executable still depends a little on what the build environment has
+#   installed - `flet` imports those packages for its own web-server path, so
+#   a virtualenv carrying the web or cli extras builds a few MB larger than
+#   the clean one CI uses.)
+EXCLUDED_MODULES = ("av", "PIL", "flet_web")
 
 
 def pyinstaller_args(
