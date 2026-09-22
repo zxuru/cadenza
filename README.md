@@ -5,9 +5,9 @@
 Search YouTube for a song or an album, look at what came back, then download it
 as tagged audio with a real cover.
 
-It ships as one file. Python, ffmpeg, a JavaScript runtime and the Flet desktop
-client are all inside it, so there is nothing to install and nothing to
-configure on the machine that runs it.
+One download per platform, and nothing to install on the machine that runs it:
+Python, ffmpeg, a JavaScript runtime and the Flet desktop client are all inside
+the executable (inside the app bundle on macOS, inside the APK on Android).
 
 ## Install
 
@@ -21,7 +21,7 @@ release](https://github.com/zxuru/cadenza/releases/latest):
 | macOS arm64 / x86_64 | `macos-<arch>.zip` | Unzip, drop `Cadenza.app` wherever you keep apps |
 | Android 7+ | `cadenza.apk` | Copy it to the phone and open it |
 
-| | Requirement |
+| Platform | Requirement |
 | --- | --- |
 | Linux | Ubuntu 24.04 or newer (older distributions need a build on that distribution) |
 | Windows | 64-bit Windows 10 or 11 |
@@ -73,8 +73,9 @@ actually produce, so a conversion never fails halfway through.
 ## Updating
 
 CI builds and publishes a release on every push to `main`, so the latest release
-is always the latest code. The version is `1.0.<build number>`; a `v1.2.3` tag
-publishes exactly that.
+is always the latest code. The version is `<major>.<minor>.<build number>`, the
+build number being the CI run: `1.0.57`, then `1.0.58`. A `v1.2.3` tag publishes
+exactly that version instead.
 
 The app does **not** check by itself. The footer shows the version it is running
 and a **Check for updates** button; pressing it looks at the latest release,
@@ -87,7 +88,7 @@ install an APK from inside itself.
 
 ## Where things are
 
-| | Path |
+| What | Path |
 | --- | --- |
 | Settings | `~/.config/Cadenza/config.json` (Linux), `%APPDATA%\Cadenza\config.json` (Windows), `~/Library/Application Support/Cadenza/config.json` (macOS), the app's own data directory on Android |
 | Music | the folder chosen on the first run, one directory per album |
@@ -119,11 +120,11 @@ python3 -m venv .venv
 .venv/bin/flet build apk --yes               # build/apk/cadenza.apk
 ```
 
-Neither tool cross-compiles, so CI builds each target on the platform that can:
-Linux and macOS with `build.py`, Windows with `build.py`, Android with
-`flet build`. iOS and the web are not targets: iOS forbids both executing a
-bundled binary and loading your own libraries, and Pyodide has no processes and
-no files that survive a reload.
+Neither tool cross-compiles, so CI builds each target on a platform that can:
+the desktop executables with `build.py` on Linux, Windows and macOS, the APK
+with `flet build` on Linux. iOS and the web are not targets: iOS forbids both
+executing a bundled binary and loading your own libraries, and Pyodide has no
+processes and no files that survive a reload.
 
 ## Languages
 
