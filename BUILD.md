@@ -405,6 +405,9 @@ Windows (macOS gets `--windowed` too):
   --collect-all flet_desktop \
   --collect-all yt_dlp \
   --hidden-import imageio_ffmpeg.binaries \
+  --hidden-import mutagen \
+  --exclude-module av \
+  --exclude-module PIL \
   --add-binary "<staged>/deno:jsrt" \
   --add-data "<project>/assets:assets" \
   --add-data "<project>/locales:locales" \
@@ -415,9 +418,13 @@ Windows (macOS gets `--windowed` too):
 (`--add-data` uses `;` instead of `:` on Windows.) The staged payloads live in
 a temporary directory, not in `build/`: `--clean` wipes the work path before
 every build. `--noupx` keeps the result identical whether or not UPX happens to
-be installed. When the build finishes, the script inspects the executable's
-archive and fails if the client archive, ffmpeg, the Deno binary, the UI assets,
-a locale file or the yt-dlp extractors are missing.
+be installed. The two `--exclude-module` flags drop what only the in-process
+converter would need - and which the desktop never uses, an executable having
+its own ffmpeg: `PIL` in particular arrives in the build environment as a
+dependency of `flet-cli` and would add ~25 MB to every executable else. When
+the build finishes, the script inspects the executable's archive and fails if
+the client archive, ffmpeg, the Deno binary, the UI assets, a locale file or
+the yt-dlp extractors are missing.
 
 ## Notes
 

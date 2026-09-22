@@ -112,6 +112,13 @@ COLLECT_ALL = ("flet", "flet_desktop", "yt_dlp")
 # while writing the cover art, and no tag lookup can be written.
 HIDDEN_IMPORTS = ("imageio_ffmpeg.binaries", "mutagen")
 
+# The in-process converter (`transcode.py`) exists for a platform whose wheels
+# carry no ffmpeg - Android. A frozen desktop build always has one, so PyAV and
+# Pillow are left out rather than shipped unused: Pillow in particular arrives
+# in the build environment as a dependency of flet-cli, which is only there to
+# run the build, and adds ~25 MB to every executable.
+EXCLUDED_MODULES = ("av", "PIL")
+
 
 def pyinstaller_args(
     client_archive: Path, client_sidecar: Path, deno_binary: Path
@@ -142,6 +149,8 @@ def pyinstaller_args(
         args += ["--collect-all", package]
     for module in HIDDEN_IMPORTS:
         args += ["--hidden-import", module]
+    for module in EXCLUDED_MODULES:
+        args += ["--exclude-module", module]
     # The desktop client archive (plus its fingerprint sidecar, which saves
     # every launch from re-hashing 40 MB) lives where `flet_desktop` looks.
     args += ["--add-data", f"{client_archive}{sep}flet_desktop/app"]

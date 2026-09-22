@@ -12,3 +12,8 @@ mutagen
 # Optional fallback: ships a static ffmpeg binary, used only when `ffmpeg`
 # is not on PATH. Drop this line if your system already has ffmpeg.
 imageio-ffmpeg>=0.6
+
+# Not installed here: `av` and `pillow`, which convert audio in-process when
+# there is no ffmpeg binary at all - the Android build's own path (see
+# transcode.py and pyproject.toml). On a desktop they are only needed if
+# neither the system ffmpeg nor imageio-ffmpeg is available.
