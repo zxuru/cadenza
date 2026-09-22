@@ -54,5 +54,19 @@
   "album_folder": "Folder: {path}",
   "album_more": "... and {count} more",
   "cancel": "Cancel",
-  "download_album": "Download album"
+  "download_album": "Download album",
+  "update_check": "Check for updates",
+  "update_checking": "Checking for updates ...",
+  "update_current": "Up to date (v{version})",
+  "update_local": "Running from source ({version}): updates are off",
+  "update_private": "The update feed answered 404: a private repository needs update_token in config.json",
+  "update_error": "Could not check for updates: {message}",
+  "update_found": "v{version} available: downloading ...",
+  "update_downloading": "Downloading v{version}: {done} of {total}",
+  "update_available_mobile": "v{version} available: open it in the browser to install it",
+  "update_download": "Download update",
+  "update_failed": "Update failed: {message}",
+  "update_restart_manual": "v{version} is installed: restart Cadenza to use it ({message})",
+  "update_restarting": "Updated to v{version}: restarting ...",
+  "updated_to": "Updated to v{version}"
 }

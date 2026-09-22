@@ -19,11 +19,16 @@ import bundle
 import engine
 import i18n
 import settings as config
+import update
+import version
 from engine import AlbumInfo, Progress, SearchResult, Track
 
 POLL_INTERVAL = 0.1
 WINDOW_SIZE = (760, 640)
 WINDOW_MIN_SIZE = (560, 460)
+
+# Version a `--updated` relaunch was performed to, so the new build can say so.
+UPDATED_TO: str | None = None
 
 
 def format_bytes(size: float | None) -> str:
@@ -92,10 +97,11 @@ def _read_art(path: Path) -> tuple[str, int, int] | None:
 def selftest(download: bool = True) -> int:
     """Headless check of the bundled engine; `--selftest` runs it.
 
-    Verifies a frozen build end to end: ffmpeg, the JavaScript runtime, the
-    yt-dlp extractors, the network path, and the tags and cover art written
-    into the file. Downloads the default format, so a build that cannot embed
-    art is caught here instead of in the user's download folder.
+    Verifies a frozen build end to end: the version it was stamped with, ffmpeg,
+    the JavaScript runtime, the yt-dlp extractors, the network path, and the
+    tags and cover art written into the file. Downloads the default format, so a
+    build that cannot embed art is caught here instead of in the user's download
+    folder.
 
     `--no-download` stops before everything that needs YouTube to cooperate -
     a CI runner is answered with "Sign in to confirm you're not a bot", for
@@ -114,6 +120,10 @@ def selftest(download: bool = True) -> int:
         lines.append(f"{name:<12} {value}")
 
     ffmpeg = engine.find_ffmpeg()
+    # What the build says it is: the workflow publishes a release per push and
+    # checks this line against the version it stamped, so a build that lost its
+    # stamp fails there instead of shipping as "1.0.0" forever.
+    report("version", version.current())
     report("ffmpeg", ffmpeg or "NOT FOUND", ffmpeg is not None)
     report("js runtimes", ", ".join(engine.find_js_runtimes()))
     try:
@@ -153,11 +163,47 @@ def selftest(download: bool = True) -> int:
             _selftest_download(results[0], report)
 
     text = "\n".join(lines)
-    if sys.stdout is None:  # windowed builds have no console
-        Path("selftest.txt").write_text(text + "\n", encoding="utf-8")
+    _emit(text, "selftest.txt")
+    return 0 if ok else 1
+
+
+def _emit(text: str, filename: str) -> None:
+    """Print a headless report, or leave it in `filename` when there is no console.
+
+    A windowed build (`--windowed` on Windows and macOS) has no stdout at all.
+    """
+    if sys.stdout is None:
+        Path(filename).write_text(text + "\n", encoding="utf-8")
     else:
         print(text)
-    return 0 if ok else 1
+
+
+def check_updates() -> int:
+    """Headless update check; `--check-updates` runs it.
+
+    The window is how the app updates, but this is how to see what its button
+    would find without opening one: the feed, this build's version, and the
+    artifact that would be installed. Nothing is downloaded.
+    """
+    token = update.env_token()
+    found = update.check(token)
+    lines = [
+        f"{'version':<12} {version.current()}",
+        f"{'asset':<12} {update.asset_name() or 'none for this platform'}",
+        f"{'token':<12} {'given' if token else 'none'}",
+    ]
+    if found.release is not None:
+        lines.append(
+            f"{'release':<12} {found.release.tag} is newer: the button installs it"
+        )
+    elif found.needs_token:
+        lines.append(f"{'release':<12} unknown (private repository, no token)")
+    elif found.error:
+        lines.append(f"{'release':<12} check failed: {found.error}")
+    else:
+        lines.append(f"{'release':<12} none newer")
+    _emit("\n".join(lines), "updatecheck.txt")
+    return 1 if found.error else 0
 
 
 def _selftest_download(result: SearchResult, report: Callable[..., None]) -> None:
@@ -276,6 +322,32 @@ def main(page: ft.Page) -> None:
 
     row_buttons: list[ft.IconButton] = []
 
+    # ------------------------------------------------------------------ updates
+
+    version_label = ft.Text(
+        f"{config.APP_NAME} {version.current()}",
+        size=11,
+        color=ft.Colors.GREY_500,
+        selectable=True,
+    )
+    update_text = ft.Text(size=11, color=ft.Colors.GREY_500, visible=False, max_lines=3)
+    update_button = ft.TextButton(
+        t("update_check"),
+        icon=ft.Icons.REFRESH,
+        on_click=lambda event: press_update(event),
+    )
+    # A phone installs nothing from inside the app: a newer release is offered
+    # as its page, which the browser downloads the APK from - and the browser
+    # is the one place that is already signed in to GitHub, which a private
+    # repository needs.
+    url_launcher = ft.UrlLauncher()
+    if not desktop:
+        page.services.append(url_launcher)
+    pending: dict[str, str] = {}  # release page waiting for the button
+    # True while a search or a download runs: an update never restarts the app
+    # out from under one.
+    working = False
+
     # ---------------------------------------------------------------- rendering
 
     def render_badge(label: str, color: str) -> None:
@@ -293,7 +365,21 @@ def main(page: ft.Page) -> None:
         )
         folder_text.color = ft.Colors.GREY_400 if state.download_root else ft.Colors.AMBER_300
 
+    def render_update(message: str, color: str = ft.Colors.GREY_500) -> None:
+        """The footer line: what the updater is doing, or nothing at all."""
+        update_text.value = message
+        update_text.color = color
+        update_text.visible = bool(message)
+
+    def render_update_action(download: bool, page_url: str = "") -> None:
+        """Make the footer button the next thing it can do."""
+        pending["page"] = page_url
+        update_button.content = t("update_download") if download else t("update_check")
+        update_button.icon = ft.Icons.OPEN_IN_NEW if download else ft.Icons.REFRESH
+
     def set_busy(busy: bool) -> None:
+        nonlocal working
+        working = busy
         query_field.disabled = busy
         search_btn.disabled = busy
         format_dropdown.disabled = busy
@@ -656,6 +742,120 @@ def main(page: ft.Page) -> None:
             updated = True
         return updated
 
+    # ------------------------------------------------------------------- updates
+
+    async def check_for_update() -> None:
+        """Look for a newer release because the button was pressed, and act on it.
+
+        Nothing here runs by itself: the app checks when asked, and updates only
+        then. It does refuse to restart out from under a download in progress -
+        it waits for it and says so - because that is the one way this ends in
+        lost work.
+        """
+        if not update.installable() and not is_mobile():
+            render_update(t("update_local", version=version.current()), ft.Colors.GREY_500)
+            safe_update()
+            return
+
+        render_update(t("update_checking"), ft.Colors.GREY_300)
+        safe_update()
+        token = state.update_token or update.env_token()
+        try:
+            found = await asyncio.to_thread(update.check, token)
+        except Exception as err:  # noqa: BLE001 - a feed answering with nonsense
+            found = update.Result(error=str(err))
+
+        if found.release is None:
+            if found.needs_token:
+                render_update(t("update_private"), ft.Colors.AMBER_300)
+            elif found.error:
+                render_update(t("update_error", message=found.error), ft.Colors.AMBER_300)
+            else:
+                render_update(t("update_current", version=version.current()))
+            safe_update()
+            return
+
+        release = found.release
+        if not update.installable():
+            render_update(
+                t("update_available_mobile", version=release.version), ft.Colors.BLUE_200
+            )
+            render_update_action(True, release.page)
+            safe_update()
+            return
+
+        while working:
+            await asyncio.sleep(1)
+
+        render_update(t("update_found", version=release.version), ft.Colors.BLUE_200)
+        safe_update()
+        # The download runs in a thread and reports through the queue: nothing
+        # but this coroutine touches a control.
+        events: queue.SimpleQueue[tuple[int, int]] = queue.SimpleQueue()
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                update.apply,
+                release,
+                token,
+                lambda written, expected: events.put((written, expected)),
+            )
+        )
+        try:
+            while True:
+                while not events.empty():
+                    written, expected = events.get()
+                    render_update(
+                        t(
+                            "update_downloading",
+                            version=release.version,
+                            done=format_bytes(written),
+                            total=format_bytes(expected),
+                        ),
+                        ft.Colors.BLUE_200,
+                    )
+                    safe_update()
+                if worker.done():
+                    break
+                await asyncio.sleep(POLL_INTERVAL)
+            executable = worker.result()
+        except Exception as err:  # noqa: BLE001 - report, keep running the old build
+            render_update(t("update_failed", message=str(err)), ft.Colors.RED_300)
+            safe_update()
+            return
+
+        try:
+            update.relaunch(executable, release.version)
+        except OSError as err:
+            # The new build is on disk, the old one is in memory: all that is
+            # left to do is to ask for a restart.
+            render_update(
+                t("update_restart_manual", version=release.version, message=err),
+                ft.Colors.AMBER_300,
+            )
+            safe_update()
+            return
+        render_update(t("update_restarting", version=release.version), ft.Colors.GREEN_300)
+        safe_update()
+        try:
+            await page.window.close()  # the instance just started takes it from here
+        except Exception:  # noqa: BLE001 - an already-closed window, or a phone
+            pass
+
+    async def open_release_page(url: str) -> None:
+        """Hand a release page to the browser: how a phone updates itself."""
+        try:
+            await url_launcher.launch_url(url)
+        except Exception as err:  # noqa: BLE001 - a platform with no browser
+            render_update(t("update_failed", message=str(err)), ft.Colors.RED_300)
+            safe_update()
+
+    def press_update(_) -> None:
+        """The one entry point: the button, and what it does next."""
+        if page_url := pending.get("page"):
+            page.run_task(open_release_page, page_url)
+        else:
+            page.run_task(check_for_update)
+
     # ------------------------------------------------------------------ handlers
 
     def start_search() -> None:
@@ -730,6 +930,13 @@ def main(page: ft.Page) -> None:
         results_list,
         progress_bar,
         status_text,
+        ft.Row(
+            [version_label, update_button],
+            wrap=True,
+            spacing=12,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
+        update_text,
     )
 
     if state.download_root is None:
@@ -739,6 +946,9 @@ def main(page: ft.Page) -> None:
         else:
             page.run_task(use_system_folder)
 
+    if UPDATED_TO:
+        render_update(t("updated_to", version=UPDATED_TO), ft.Colors.GREEN_300)
+
     # Everything is laid out: show the window at its real size.
     page.run_task(reveal_window)
 
@@ -746,6 +956,15 @@ def main(page: ft.Page) -> None:
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         raise SystemExit(selftest(download="--no-download" not in sys.argv))
+    if "--check-updates" in sys.argv:
+        raise SystemExit(check_updates())
+    if "--updated" in sys.argv:
+        index = sys.argv.index("--updated")
+        UPDATED_TO = sys.argv[index + 1] if index + 1 < len(sys.argv) else ""
+    if update.installable():
+        # Whatever the update that installed this build could not delete: on
+        # Windows the displaced executable stays mapped until its process ends.
+        update.cleanup()
     if sys.platform.startswith("linux"):
         # Gives the client window a stable app id, so a desktop entry (and thus
         # the app icon) can be matched by the shell.

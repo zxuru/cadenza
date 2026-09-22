@@ -76,6 +76,10 @@ class Settings:
         self.path = path or config_dir() / CONFIG_FILE_NAME
         self.download_root: Path | None = None
         self.format: str | None = None
+        # Token to read the releases of the (private) repository with; the
+        # updater also takes it from CADENZA_UPDATE_TOKEN. Nothing is checked
+        # or installed unless the user asks for it (see update.py).
+        self.update_token: str | None = None
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:
@@ -90,6 +94,9 @@ class Settings:
         fmt = raw.get("format")
         if isinstance(fmt, str) and fmt:
             settings.format = fmt
+        token = raw.get("update_token")
+        if isinstance(token, str) and token.strip():
+            settings.update_token = token.strip()
         return settings
 
     def save(self) -> None:
@@ -97,5 +104,6 @@ class Settings:
         payload = {
             "download_root": str(self.download_root) if self.download_root else None,
             "format": self.format,
+            "update_token": self.update_token,
         }
         self.path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
