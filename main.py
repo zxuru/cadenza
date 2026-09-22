@@ -97,10 +97,11 @@ def selftest(download: bool = True) -> int:
     into the file. Downloads the default format, so a build that cannot embed
     art is caught here instead of in the user's download folder.
 
-    `--no-download` stops before that download, for a machine YouTube will not
-    serve: a CI runner gets "Sign in to confirm you're not a bot" on every
-    video, while everything up to the search still runs. What is left out is
-    exactly what the file on disk proves.
+    `--no-download` stops before everything that needs YouTube to cooperate -
+    a CI runner is answered with "Sign in to confirm you're not a bot", for
+    single videos and often for the search as well, which says nothing about
+    the build. What is left is what any machine can check: ffmpeg, the
+    JavaScript runtime, the extractors, and that the frozen app starts.
     """
     import tempfile
 
@@ -116,6 +117,15 @@ def selftest(download: bool = True) -> int:
     report("ffmpeg", ffmpeg or "NOT FOUND", ffmpeg is not None)
     report("js runtimes", ", ".join(engine.find_js_runtimes()))
     try:
+        # Bundled through `--collect-all yt_dlp`: the registry is built by
+        # scanning the package, so a build that ships the package without its
+        # extractors would otherwise go unnoticed until the first search.
+        from yt_dlp.extractor import gen_extractors
+
+        report("extractors", str(len(gen_extractors())))
+    except Exception as err:  # noqa: BLE001 - report, do not crash
+        report("extractors", f"MISSING ({err})", False)
+    try:
         # Bundled through `--hidden-import`: yt-dlp needs it to put cover art
         # into FLAC files, and nothing imports it directly.
         import mutagen
@@ -124,18 +134,21 @@ def selftest(download: bool = True) -> int:
     except ImportError as err:
         report("mutagen", f"MISSING ({err})", False)
 
-    try:
-        results = engine.search("Kevin MacLeod Sneaky Snitch", limit=2)
-        report(
-            "search",
-            f"{len(results)} result(s): {results[0].title}" if results else "no results",
-            bool(results),
-        )
-    except Exception as err:  # noqa: BLE001 - report, do not crash
-        report("search", f"FAILED: {err}", False)
+    if not download:
+        report("search", "skipped (--no-download)")
+        report("download", "skipped (--no-download)")
     else:
-        if not download:
-            report("download", "skipped (--no-download)")
+        try:
+            results = engine.search("Kevin MacLeod Sneaky Snitch", limit=2)
+            report(
+                "search",
+                f"{len(results)} result(s): {results[0].title}"
+                if results
+                else "no results",
+                bool(results),
+            )
+        except Exception as err:  # noqa: BLE001 - report, do not crash
+            report("search", f"FAILED: {err}", False)
         else:
             _selftest_download(results[0], report)
 
@@ -147,7 +160,7 @@ def selftest(download: bool = True) -> int:
     return 0 if ok else 1
 
 
-def _selftest_download(result: SearchResult, report) -> None:
+def _selftest_download(result: SearchResult, report: Callable[..., None]) -> None:
     """Download one track and check what was written into it."""
     import tempfile
 

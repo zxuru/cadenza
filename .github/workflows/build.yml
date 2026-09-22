@@ -50,19 +50,26 @@ jobs:
         run: python build.py
 
       # The frozen build checks itself: ffmpeg, the JavaScript runtime, the
-      # yt-dlp extractors and the network path. The download itself is left out
-      # (--no-download): YouTube serves a CI runner's address "Sign in to
-      # confirm you're not a bot" on every video, which says nothing about the
-      # build. Run `--selftest` without that flag on a real machine - BUILD.md
-      # shows what a full run prints.
+      # yt-dlp extractor registry and mutagen. --no-download leaves out
+      # everything that needs YouTube to cooperate - a CI runner is answered
+      # "Sign in to confirm you're not a bot", for single videos and often for
+      # the search too, which says nothing about the build. Run `--selftest`
+      # without the flag on a real machine; BUILD.md shows what it prints.
       - name: Verify
         shell: bash
         run: |
-          case "${{ runner.os }}" in
-            macOS)   dist/Cadenza.app/Contents/MacOS/Cadenza --selftest --no-download ;;
-            Windows) dist/Cadenza.exe --selftest --no-download ;;
-            *)       dist/Cadenza --selftest --no-download ;;
-          esac
+          binary=dist/Cadenza
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            binary=dist/Cadenza.app/Contents/MacOS/Cadenza
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            binary=dist/Cadenza.exe
+          fi
+          if ! "$binary" --selftest --no-download; then
+            # A windowed build has no console to print to: it leaves the
+            # report in selftest.txt next to where it ran.
+            cat selftest.txt 2>/dev/null || true
+            exit 1
+          fi
 
       # A tarball keeps the executable bit; `ditto` keeps the permissions and
       # symlinks an .app bundle is made of.

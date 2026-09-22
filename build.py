@@ -42,6 +42,7 @@ import gzip
 import hashlib
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -244,12 +245,20 @@ def download(url: str, dest: Path) -> None:
 
 
 def deno_digest(asset: str) -> str:
-    """SHA-256 GitHub publishes next to the Deno release asset."""
+    """SHA-256 GitHub publishes next to the Deno release asset.
+
+    The `.sha256sum` file is written by different tools on different runners:
+    a POSIX `sha256sum` line on Linux and macOS, PowerShell's `Get-FileHash`
+    output on Windows (`Algorithm : SHA256`, `Hash : <digest>`, `Path : ...`).
+    The digest is the only 64-character hex token in either.
+    """
     with urllib.request.urlopen(f"{DENO_RELEASE_URL}/{asset}.sha256sum") as response:
-        fields = response.read().decode("ascii", "replace").split()
-    digest = fields[0].lower() if fields else ""
-    if len(digest) != 64:
-        raise BuildError(f"unexpected contents in {asset}.sha256sum: {fields}")
+        text = response.read().decode("ascii", "replace")
+    digest = next(
+        (token.lower() for token in re.findall(r"[0-9a-fA-F]{64}", text)), ""
+    )
+    if not digest:
+        raise BuildError(f"no SHA-256 digest in {asset}.sha256sum: {text.strip()!r}")
     return digest
 
 

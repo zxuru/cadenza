@@ -148,12 +148,17 @@ A real run, ~25 s:
 ```
 ffmpeg       /tmp/_MEI0003d59fP62kNf/imageio_ffmpeg/binaries/ffmpeg-linux-x86_64-v7.0.2
 js runtimes  deno
+extractors   1751
 mutagen      1.48.1
 search       2 result(s): Sneaky Snitch
 download     Sneaky Snitch.flac (22.3 MiB)
 tags         artist=Kevin MacLeod · album=Mystery · genre=Electronic · date=2014-12-27
 cover art    mjpeg 1400x1400
 ```
+
+The `extractors` line is the check on the `--collect-all yt_dlp` payload: yt-dlp
+builds that registry by scanning its own package, so a bundle that ships the
+package without its extractors still starts and only fails at the first search.
 
 The `tags` line is also the check that the tag lookup ran: that upload's own
 tags are `album=Robotik Party`, `genre=Music` and `date=2023-11-28`, so
@@ -166,10 +171,11 @@ video thumbnail cropped to 4:3, so a build that embeds YouTube's 16:9 frame
 unmodified fails the self-test instead of shipping covers that look stretched.
 
 YouTube will not serve a CI runner: every video answers "Sign in to confirm
-you're not a bot", which says nothing about the build. Automatic builds
-therefore run the same check with `--no-download`, which stops after the
-search - the bundled ffmpeg, JavaScript runtime, mutagen, extractors and the
-network path are all still exercised:
+you're not a bot", and often the search does too, which says nothing about the
+build. Automatic builds therefore run the same check with `--no-download`,
+which leaves out everything that needs YouTube to cooperate and checks what any
+machine can: the bundled ffmpeg, the JavaScript runtime, the yt-dlp extractor
+registry and mutagen.
 
 ```bash
 /absolute/path/to/dist/Cadenza --selftest --no-download
