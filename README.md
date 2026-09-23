@@ -52,6 +52,13 @@ afterwards — "Change folder" moves it. Downloads are one folder per album.
   position it has in the release you picked.
 - **Progress** is per track: downloaded, total, speed and ETA, then the
   conversion, then the metadata lookup.
+- **A Spotify playlist can be pasted as a link.** Its track list is read from
+  the player Spotify embeds in pages — no account, no API key, nothing to
+  register — and every track is then matched on YouTube Music by title and
+  length, so a live take does not stand in for the studio recording. What
+  Spotify's embed publishes is what the dialog shows: a playlist longer than
+  100 tracks is cut there (the dialog says so), and a private one cannot be
+  read at all.
 - **Tags and cover art** come from a music database, not from the video: iTunes
   Search first (one request carries album, album artist, track and disc number,
   genre and a square cover), Deezer as fallback. A track the databases do not

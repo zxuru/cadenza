@@ -319,6 +319,12 @@ def main(page: ft.Page) -> None:
     results_list = ft.ListView(expand=True, spacing=2, padding=ft.Padding.only(top=8))
     progress_bar = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=3)
     status_text = ft.Text(t("status_start"), size=13, selectable=True)
+    # A playlist that came out short has to say so: this is the line that names
+    # the tracks left out and the reason, and it stays after the run ends.
+    detail_text = ft.Text(
+        size=12, color=ft.Colors.AMBER_300, selectable=True, visible=False
+    )
+    skipped: list[tuple[str, str]] = []
 
     row_buttons: list[ft.IconButton] = []
 
@@ -395,10 +401,15 @@ def main(page: ft.Page) -> None:
 
     def subtitle_for(result: SearchResult) -> str:
         if result.kind == "album":
-            parts = [t("subtitle_album")]
+            # A linked Spotify playlist is read from Spotify, not searched for
+            # here: say so, because its audio is still matched on YouTube.
+            label = "subtitle_spotify" if result.source == engine.SPOTIFY else "subtitle_album"
+            parts = [t(label)]
             if result.track_count:
                 parts.append(t.plural("subtitle_tracks", result.track_count))
-            if result.artist:
+            # Spotify owns its own editorial playlists: "Spotify · Spotify" says
+            # nothing, so the owner is only shown when it is someone else.
+            if result.artist and result.artist != t(label):
                 parts.append(result.artist)
             return "  ·  ".join(parts)
         parts = [part for part in (result.artist, result.album) if part]
@@ -437,6 +448,25 @@ def main(page: ft.Page) -> None:
                 parts.append(f"{progress.track_index}/{progress.track_count}")
         if progress.title:
             parts.append(progress.title)
+
+        if progress.stage == "skipped":
+            # Which tracks were left out, and why. Kept after the download ends:
+            # "saved 21 of 40" is only half an answer without this.
+            skipped.append((progress.title or "?", progress.note))
+            title, note = skipped[-1]
+            detail_text.value = t(
+                "status_skipped", count=len(skipped), title=title, reason=note
+            )
+            detail_text.visible = True
+            return
+
+        if progress.stage == "matching":
+            # A Spotify playlist arrives as titles: each one is looked up in
+            # YouTube Music before anything is downloaded.
+            progress_bar.value = None
+            parts.append(t("status_matching"))
+            render_status(" · ".join(parts), ft.Colors.BLUE_200)
+            return
 
         if progress.stage == "converting":
             progress_bar.value = None  # indeterminate while ffmpeg runs
@@ -598,7 +628,13 @@ def main(page: ft.Page) -> None:
 
     def show_album_dialog(album: AlbumInfo) -> None:
         target = state.download_root / album.folder if state.download_root else Path(album.folder)
-        details = [value for value in (album.artist, album.year and str(album.year)) if value]
+        source = t("subtitle_spotify") if album.source == engine.SPOTIFY else None
+        # "Spotify · Spotify · 50 tracks" says nothing: Spotify owns its own
+        # editorial playlists, so the owner is only shown when it is someone else.
+        artist = album.artist if album.artist and album.artist != source else None
+        details = [
+            value for value in (source, artist, album.year and str(album.year)) if value
+        ]
         details.append(t.plural("subtitle_tracks", album.track_count))
         if album.total_duration:
             details.append(format_duration(album.total_duration))
@@ -615,6 +651,13 @@ def main(page: ft.Page) -> None:
                     size=12,
                     color=ft.Colors.GREY_500,
                 )
+            )
+
+        if album.truncated:
+            # Spotify's own list stops at 100 tracks: what was read is what the
+            # download has to work with.
+            track_lines.append(
+                ft.Text(t("album_truncated"), size=12, color=ft.Colors.AMBER_300)
             )
 
         def confirm(_) -> None:
@@ -691,6 +734,8 @@ def main(page: ft.Page) -> None:
 
         render_badge(t("badge_downloading"), ft.Colors.BLUE_300)
         progress_bar.visible = True
+        skipped.clear()
+        detail_text.visible = False
         set_busy(True)
         safe_update()
 
@@ -932,6 +977,7 @@ def main(page: ft.Page) -> None:
         results_list,
         progress_bar,
         status_text,
+        detail_text,
         ft.Row(
             [version_label, update_button],
             wrap=True,

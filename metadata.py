@@ -252,18 +252,18 @@ def _match_key(
     channel), so a candidate is not rejected for a mismatched artist - it only
     ranks lower.
     """
-    title_score = _title_score(_normalize(title), _normalize(candidate.title))
-    if not title_score:
+    rank = title_score(normalize(title), normalize(candidate.title))
+    if not rank:
         return None
     delta = 0.0
     if duration and candidate.duration:
         delta = abs(duration - candidate.duration)
         if delta > DURATION_TOLERANCE:
             return None
-    return (title_score, _artist_score(artist, candidate.artist), -delta)
+    return (rank, _artist_score(artist, candidate.artist), -delta)
 
 
-def _title_score(source: str, candidate: str) -> int:
+def title_score(source: str, candidate: str) -> int:
     """3 when the titles are the same, 1 when one contains the other, else 0.
 
     Containment is what matches an uploader's decoration ("Sneaky Snitch
@@ -280,10 +280,10 @@ def _artist_score(source: str | None, candidate: str) -> int:
     """Shared words between the two names: "Kevin MacLeod Archive" is Kevin MacLeod."""
     if not source or not candidate:
         return 0
-    return len(set(_normalize(source).split()) & set(_normalize(candidate).split()))
+    return len(set(normalize(source).split()) & set(normalize(candidate).split()))
 
 
-def _normalize(text: str) -> str:
+def normalize(text: str) -> str:
     """Case-, accent- and punctuation-insensitive form, for comparing names."""
     plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
     plain = _BRACKETS.sub(" ", plain.casefold())

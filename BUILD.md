@@ -82,7 +82,7 @@ and take a few minutes.
 
 | Payload | How |
 | --- | --- |
-| The app | `assets/app.zip`: every module compiled (`main.pyc`, `engine.pyc`, `transcode.pyc`, `metadata.pyc`, `bundle.pyc`, `i18n.pyc`, `settings.pyc`), plus `assets/` and `locales/` |
+| The app | `assets/app.zip`: every module compiled (`main.pyc`, `engine.pyc`, `spotify.pyc`, `transcode.pyc`, `metadata.pyc`, `bundle.pyc`, `i18n.pyc`, `settings.pyc`), plus `assets/` and `locales/` |
 | Python 3.14.7 | `libpython3.14.so` per ABI, with `stdlib.zip` and `sitepackages.zip` |
 | `flet`, `yt-dlp`, `mutagen` | `[project.dependencies]` in `pyproject.toml`, installed by `flet build` from PyPI |
 | `av`, `pillow` | `[tool.flet.android.dependencies]`, from Flet's own wheel index (`pypi.flet.dev`), which is where the Android builds of binary packages live |

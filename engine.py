@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable, Literal, Sequence
 from urllib.parse import quote
 
 import yt_dlp
@@ -21,11 +22,27 @@ from yt_dlp.utils import DownloadError as YtDlpDownloadError
 
 import bundle
 import metadata
+import spotify
 import transcode
 
 MUSIC_SEARCH_URL = "https://music.youtube.com/search?q={query}"
 SEARCH_LIMIT = 10
 RESOLVE_WORKERS = 8
+# Uploads resolved per playlist track before it is given up on: the ones whose
+# title matches, best first. Resolving is what a length can be checked against.
+MATCH_TRIES = 3
+# Playlist matching resolves an upload per track, and YouTube starts refusing a
+# burst of those ("Sign in to confirm you're not a bot"). Fewer workers than a
+# search page uses, a stagger between the requests and a second try for what was
+# refused is what keeps a long playlist from being cut in half.
+MATCH_WORKERS = 4
+MATCH_STAGGER = 0.4  # seconds between the matching requests
+MATCH_RETRY_PAUSE = 3.0  # seconds between the retries of one pass
+MATCH_RETRY_GIVE_UP = 3  # refusals in a row that end the retry pass
+# The one failure a retry can fix, and the one it cannot: a lookup YouTube
+# refused says nothing about whether the track exists, a miss does.
+REFUSED = "YouTube refused the request (rate limit or sign-in check)"
+NO_MATCH = "no match on YouTube"
 
 # Format key -> audio quality passed to FFmpegExtractAudio. `None` leaves the
 # codec defaults alone, which is what the lossless and PCM targets want.
@@ -68,6 +85,12 @@ _TITLE_PREFIXES = ("Album - ", "Playlist - ", "Mix - ")
 _ILLEGAL_PATH_CHARS = '<>:"/\\|?*'
 _MAX_FOLDER_LENGTH = 120
 
+# A linked Spotify playlist is a list of queries, not a list of URLs: nothing in
+# it can be handed to yt-dlp (see `spotify`), so every track is matched on
+# YouTube Music first and what is downloaded is that upload. This is the
+# `source` a result, an album and the UI carry for one.
+SPOTIFY = "spotify"
+
 
 class DownloadError(RuntimeError):
     """A search, inspection or download failed."""
@@ -108,6 +131,9 @@ class SearchResult:
     # ranked on this, because a plain re-upload of the same recording carries a
     # channel name where the artist belongs and a category where the genre does.
     music: bool = False
+    # Where the candidate came from, when it is not YouTube: `SPOTIFY` for a
+    # linked playlist or track, whose audio comes from YouTube on download.
+    source: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +148,10 @@ class AlbumInfo:
     track_count: int = 0
     total_duration: int | None = None
     track_titles: list[str] = field(default_factory=list)
+    source: str = ""
+    # The source carries more tracks than it published (`SPOTIFY`): what is
+    # here is all it gave, and the dialog says so before the download starts.
+    truncated: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +167,7 @@ class Track:
 class Progress:
     """Snapshot of an in-flight download, handed to the UI from a worker thread."""
 
-    stage: Literal["downloading", "converting", "tagging"]
+    stage: Literal["matching", "downloading", "converting", "tagging", "skipped"]
     percent: float | None
     downloaded_bytes: int
     total_bytes: int | None
@@ -146,6 +176,10 @@ class Progress:
     title: str | None = None
     track_index: int | None = None  # 1-based position inside an album
     track_count: int | None = None
+    # Why a track will not be downloaded, for the `skipped` stage: a reason the
+    # UI shows next to the count, because a playlist that came out short has to
+    # say which tracks are missing and why.
+    note: str = ""
 
 
 def find_ffmpeg() -> str | None:
@@ -239,8 +273,51 @@ def search(query: str, limit: int = SEARCH_LIMIT) -> list[SearchResult]:
     return _rank(results)[:limit]
 
 
+def _spotify_playlist(url: str) -> spotify.Playlist:
+    """Read one linked playlist, as one error type for the UI to show."""
+    try:
+        return spotify.playlist(url)
+    except spotify.SpotifyError as err:
+        raise DownloadError(str(err)) from err
+
+
+def _spotify_result(url: str) -> SearchResult:
+    """One linked playlist, album or track, as the results list shows it."""
+    playlist = _spotify_playlist(url)
+    single = len(playlist.tracks) == 1
+    track = playlist.tracks[0]
+    return SearchResult(
+        kind="track" if single else "album",
+        title=playlist.name,
+        url=url,
+        artist=playlist.owner,
+        duration=int(track.duration) if single and track.duration else None,
+        track_count=None if single else len(playlist.tracks),
+        source=SPOTIFY,
+    )
+
+
+def _spotify_album(url: str) -> AlbumInfo:
+    """What the confirmation dialog shows for a Spotify link."""
+    playlist = _spotify_playlist(url)
+    durations = [track.duration for track in playlist.tracks if track.duration]
+    return AlbumInfo(
+        title=playlist.name,
+        url=url,
+        folder=_folder_name(playlist.name, playlist.owner),
+        artist=playlist.owner,
+        track_count=len(playlist.tracks),
+        total_duration=int(sum(durations)) if durations else None,
+        track_titles=[track.title for track in playlist.tracks],
+        source=SPOTIFY,
+        truncated=playlist.truncated,
+    )
+
+
 def probe_album(url: str) -> AlbumInfo:
-    """Read an album's or playlist's track list without downloading it."""
+    """Read an album's, playlist's or Spotify link's track list, without downloading it."""
+    if spotify.handles(url):
+        return _spotify_album(url)
     with _ydl(extract_flat="in_playlist") as ydl:
         info = ydl.extract_info(url, download=False)
 
@@ -263,6 +340,16 @@ def probe_album(url: str) -> AlbumInfo:
     )
 
 
+def _require_converter(target_format: str) -> None:
+    """Refuse a format this machine cannot produce, before anything is fetched."""
+    if target_format not in FORMATS:
+        raise DownloadError(f"Unsupported format: {target_format}")
+    if find_ffmpeg() is None and not transcode.can_convert(target_format):
+        raise DownloadError(
+            "ffmpeg was not found. Install it or `pip install imageio-ffmpeg`."
+        )
+
+
 def download(
     target: str,
     target_format: str,
@@ -273,16 +360,17 @@ def download(
     """Download `target` into `dest_root`, converting to `target_format`.
 
     With `album` set, every track of that album lands in one dedicated folder.
+    A Spotify link is not a URL yt-dlp can take, so it is matched track by track
+    instead (`_download_spotify`).
     Blocking: call it from a worker thread.
     """
-    if target_format not in FORMATS:
-        raise DownloadError(f"Unsupported format: {target_format}")
-
-    ffmpeg = find_ffmpeg()
-    if ffmpeg is None and not transcode.can_convert(target_format):
-        raise DownloadError(
-            "ffmpeg was not found. Install it or `pip install imageio-ffmpeg`."
+    if spotify.handles(target):
+        return _download_spotify(
+            target, target_format, dest_root, album, progress_callback
         )
+
+    _require_converter(target_format)
+    ffmpeg = find_ffmpeg()
 
     dest_root = Path(dest_root).expanduser()
     if album is not None:
@@ -296,27 +384,7 @@ def download(
         extra = {}
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if ffmpeg is not None:
-        ydl_opts = _base_opts() | {
-            "format": "bestaudio/best",
-            "outtmpl": outtmpl,
-            "postprocessors": _postprocessors(target_format),
-            "progress_hooks": [_make_progress_hook(progress_callback)],
-        } | _art_opts(target_format) | extra
-    else:
-        # Nothing to spawn: yt-dlp saves the stream as it comes and the
-        # conversion happens in this process afterwards (`_convert_downloads`),
-        # so none of its postprocessors - every one of them an ffmpeg run - are
-        # configured. The thumbnail is still worth downloading: the video frame
-        # stands in for a cover until a music database supplies one, and a
-        # container that cannot hold a picture goes without, exactly as it does
-        # on the ffmpeg path.
-        ydl_opts = _base_opts() | {
-            "format": "bestaudio/best",
-            "outtmpl": outtmpl,
-            "progress_hooks": [_make_progress_hook(progress_callback)],
-            "writethumbnail": target_format in ART_FORMATS,
-        } | extra
+    ydl_opts = _download_opts(target_format, outtmpl, progress_callback, extra, ffmpeg)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -338,6 +406,379 @@ def download(
     if not tracks:
         raise DownloadError(f'No audio file was produced for "{target}".')
     return tracks
+
+
+def _download_spotify(
+    target: str,
+    target_format: str,
+    dest_root: Path,
+    album: AlbumInfo | None,
+    progress_callback: Callable[[Progress], None] | None,
+) -> list[Track]:
+    """Download a Spotify playlist by matching each of its tracks on YouTube.
+
+    Spotify serves no audio to a caller without a login - the embed carries
+    titles, artists and lengths - so what lands on disk is the YouTube Music
+    upload that matches. Every track is fetched on its own, in playlist order,
+    and one that cannot be matched or downloaded is left out instead of failing
+    the rest: the UI is told which ones and why (`_report_skip`), because a
+    playlist that came out short has to account for it. A track whose file is
+    already in the folder is left alone - no lookup, no download - so a playlist
+    that was cut short can simply be run again.
+    """
+    _require_converter(target_format)
+    ffmpeg = find_ffmpeg()
+    playlist = _spotify_playlist(target)
+
+    dest_root = Path(dest_root).expanduser()
+    numbered = album is not None
+    out_dir = dest_root / album.folder if album is not None else dest_root
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    total = len(playlist.tracks)
+    pending: list[tuple[int, spotify.Track]] = []
+    for index, entry in enumerate(playlist.tracks, start=1):
+        if _destination(out_dir, index, entry.title, numbered, target_format).is_file():
+            _report_skip(progress_callback, entry, index, total, "already in the folder")
+            continue
+        pending.append((index, entry))
+
+    urls, reasons = (
+        _match_tracks(pending, total, progress_callback) if pending else ([], [])
+    )
+    tracks: list[Track] = []
+    failure = f"No track of {target} could be downloaded"
+    for (index, entry), url, reason in zip(pending, urls, reasons):
+        if url is None:
+            _report_skip(progress_callback, entry, index, total, reason)
+            failure = f'Nothing matched "{entry.title}" on YouTube'
+            continue
+        callback = _numbered(progress_callback, index, total, entry.title)
+        opts = _download_opts(
+            target_format,
+            _outtmpl(out_dir, index, entry.title, numbered),
+            callback,
+            {},
+            ffmpeg,
+        )
+        try:
+            info = _extract(url, opts, ffmpeg, target_format, album, index, total)
+        except YtDlpDownloadError as err:
+            failure = f'"{entry.title}": {_clean_message(err)}'
+            _report_skip(progress_callback, entry, index, total, _clean_message(err))
+            _discard(out_dir, index, entry.title, numbered)
+            continue
+        track = _track_of(info, target_format)
+        if track is None:
+            _report_skip(
+                progress_callback, entry, index, total, "no audio file was produced"
+            )
+            continue
+        _enrich(info, track, album, callback)
+        tracks.append(track)
+
+    if pending and not tracks:
+        raise DownloadError(failure)
+    return tracks
+
+
+def _extract(
+    url: str,
+    opts: dict,
+    ffmpeg: str | None,
+    target_format: str,
+    album: AlbumInfo | None,
+    index: int,
+    total: int,
+) -> dict:
+    """One track of a playlist: fetch it, then treat it as a numbered entry.
+
+    The position is written onto the info dict the way a playlist URL carries
+    it, so the tags - and `_album_tags`, which reads it - see what they see for
+    an album YouTube itself provided.
+    """
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.add_post_processor(_TagFixupPP(), when="pre_process")
+        info = ydl.extract_info(url, download=True)
+    info["playlist_index"] = index
+    info["playlist_count"] = total
+    if ffmpeg is None:
+        _convert_downloads(info, target_format, album)
+    return info
+
+
+def _match_tracks(
+    tracks: Sequence[tuple[int, spotify.Track]],
+    total: int,
+    progress_callback: Callable[[Progress], None] | None,
+) -> tuple[list[str | None], list[str]]:
+    """The YouTube Music upload for every track, and why the rest has none.
+
+    One search per track - `tracks` holds each one with its position in the
+    playlist, `total` is how long that playlist is, which is what the UI counts
+    against - looked up in parallel but at a walking pace, because YouTube
+    starts refusing a burst of them. A refusal says nothing about the track, so
+    the ones it hit are tried once more; a pass that keeps being refused is left
+    alone instead of hammered, and what is still missing is reported rather than
+    quietly dropped.
+    """
+    urls: list[str | None] = [None] * len(tracks)
+    reasons = [""] * len(tracks)
+
+    def match(position: int) -> None:
+        index, track = tracks[position]
+        _report_matching(progress_callback, track, index, total)
+        urls[position] = _match_track(track)
+
+    refused: list[int] = []
+    with ThreadPoolExecutor(max_workers=min(MATCH_WORKERS, len(tracks))) as pool:
+        futures = {}
+        for position in range(len(tracks)):
+            futures[pool.submit(match, position)] = position
+            # The stagger is the pacing: submitting as fast as the pool takes
+            # them is what makes YouTube ask for a sign-in half way through.
+            time.sleep(MATCH_STAGGER)
+        for future, position in futures.items():
+            try:
+                future.result()
+            except Exception as err:  # noqa: BLE001 - one track must not stop the rest
+                refused.append(position)
+                reasons[position] = _lookup_reason(err)
+
+    for position, reason in enumerate(reasons):
+        if urls[position] is None and not reason:
+            reasons[position] = NO_MATCH
+
+    streak = 0
+    for position in refused:
+        if streak >= MATCH_RETRY_GIVE_UP:
+            break  # YouTube is refusing everything: asking again only makes it worse
+        time.sleep(MATCH_RETRY_PAUSE)
+        index, track = tracks[position]
+        _report_matching(progress_callback, track, index, total)
+        try:
+            urls[position] = _match_track(track)
+        except Exception as err:  # noqa: BLE001
+            streak += 1
+            reasons[position] = _lookup_reason(err)
+            continue
+        streak = 0
+        reasons[position] = "" if urls[position] else NO_MATCH
+
+    if not any(urls):
+        raise DownloadError(
+            f"{REFUSED}: try again in a few minutes"
+            if all(reason == REFUSED for reason in reasons)
+            else "No track of this playlist could be matched on YouTube"
+        )
+    return urls, reasons
+
+
+def _report_matching(
+    progress_callback: Callable[[Progress], None] | None,
+    track: spotify.Track,
+    index: int,
+    total: int,
+) -> None:
+    """Tell the UI which track is being looked up, and where it sits."""
+    if progress_callback is None:
+        return
+    progress_callback(
+        Progress(
+            stage="matching",
+            percent=None,
+            downloaded_bytes=0,
+            total_bytes=None,
+            speed=None,
+            eta=None,
+            title=track.title,
+            track_index=index,
+            track_count=total,
+        )
+    )
+
+
+def _report_skip(
+    progress_callback: Callable[[Progress], None] | None,
+    track: spotify.Track,
+    index: int,
+    total: int,
+    note: str,
+) -> None:
+    """Tell the UI about a track that will not be downloaded, and why."""
+    if progress_callback is None:
+        return
+    progress_callback(
+        Progress(
+            stage="skipped",
+            percent=None,
+            downloaded_bytes=0,
+            total_bytes=None,
+            speed=None,
+            eta=None,
+            title=track.title,
+            track_index=index,
+            track_count=total,
+            note=note,
+        )
+    )
+
+
+def _lookup_reason(error: Exception) -> str:
+    """Why a lookup failed, as the UI will show it.
+
+    YouTube asking for a sign-in is the one worth naming: it is a rate limit on
+    this machine rather than anything about the track, and the same playlist
+    works again later.
+    """
+    message = _clean_message(error)
+    if "Sign in to confirm" in message or "not a bot" in message:
+        return REFUSED
+    return message or error.__class__.__name__
+
+
+def _match_track(track: spotify.Track) -> str | None:
+    """The upload that is this track, or None when nothing close enough exists.
+
+    A search hit carries nothing but a title, so the best few of them - the ones
+    whose title matches, in YouTube's own order - are resolved before one is
+    picked, and checked the way the database lookup checks its own candidates:
+    a length Spotify cannot argue with. That is what keeps a live take or an
+    extended edit out of the download.
+    """
+    query = " ".join(part for part in (track.title, track.artist) if part)
+    songs = [
+        entry for entry in _music_candidates(query) if not _is_playlist_entry(entry)
+    ]
+    for candidates in (songs, _video_candidates(query)):
+        for candidate in _ranked(candidates, track):
+            resolved = _resolve_entry(candidate)
+            if resolved is not None and _same_recording(resolved, track):
+                return resolved.url
+    return None
+
+
+def _ranked(candidates: list[dict], track: spotify.Track) -> list[dict]:
+    """The candidates whose title matches, best first, YouTube breaking the ties."""
+    scored = [
+        (rank, entry)
+        for entry in candidates
+        if (rank := _title_rank(entry, track))
+    ]
+    scored.sort(key=lambda pair: -pair[0])
+    return [entry for _, entry in scored[:MATCH_TRIES]]
+
+
+def _title_rank(candidate: dict, track: spotify.Track) -> int:
+    """How well a candidate's title matches, in `metadata.title_score`'s terms."""
+    return metadata.title_score(
+        metadata.normalize(track.title),
+        metadata.normalize(str(candidate.get("title") or "")),
+    )
+
+
+def _same_recording(resolved: SearchResult, track: spotify.Track) -> bool:
+    """True when a resolved upload is this track and not another recording of it.
+
+    The playlist states how long the track is and a resolved entry carries the
+    upload's own length: a difference no re-upload explains is a live take, a
+    longer edit or a cover. It is the test the database lookup makes, on the
+    length Spotify gave us rather than on the video's.
+    """
+    if resolved.kind != "track":
+        return False
+    if not track.duration or not resolved.duration:
+        return True
+    return abs(track.duration - resolved.duration) <= metadata.DURATION_TOLERANCE
+
+
+def _stem(index: int, title: str, numbered: bool) -> str:
+    """What one track's file is called: the playlist's own name for it.
+
+    The YouTube upload's title is not what the user picked - a playlist link
+    names its tracks - so the file is named from the playlist, numbered when it
+    belongs to an album folder.
+    """
+    name = _sanitize_path(title)
+    return f"{index:02d} - {name}" if numbered else name
+
+
+def _outtmpl(out_dir: Path, index: int, title: str, numbered: bool) -> str:
+    """Output template for one track of a playlist, inside its folder.
+
+    `%` starts a field in yt-dlp's template, so a title carrying one is escaped,
+    and the folder is part of the template: a bare name would land in the
+    process's working directory instead.
+    """
+    return str(out_dir / f"{_stem(index, title, numbered).replace('%', '%%')}.%(ext)s")
+
+
+def _destination(
+    out_dir: Path, index: int, title: str, numbered: bool, target_format: str
+) -> Path:
+    """The file one track ends up as - what a second run of the playlist finds."""
+    return out_dir / f"{_stem(index, title, numbered)}{transcode.extension(target_format)}"
+
+
+def _discard(out_dir: Path, index: int, title: str, numbered: bool) -> None:
+    """Remove what a track that failed left behind: its thumbnail, its part file.
+
+    yt-dlp writes the picture before the audio, so a download that ends in an
+    error leaves a cover for a file that does not exist - which is litter in a
+    folder the user is meant to read as their music.
+    """
+    prefix = f"{_stem(index, title, numbered)}."
+    for leftover in out_dir.iterdir():
+        if leftover.name.startswith(prefix):
+            leftover.unlink(missing_ok=True)
+
+
+def _numbered(
+    progress_callback: Callable[[Progress], None] | None,
+    index: int,
+    total: int,
+    title: str,
+) -> Callable[[Progress], None] | None:
+    """The download callback for one track of a playlist.
+
+    yt-dlp reports a single video's progress: it does not know where that video
+    sits in the playlist, and it names the upload rather than the track. Both
+    come from here, so the UI counts and names what the playlist holds.
+    """
+    if progress_callback is None:
+        return None
+    return lambda progress: progress_callback(
+        replace(progress, title=title, track_index=index, track_count=total)
+    )
+
+
+def _download_opts(
+    target_format: str,
+    outtmpl: str,
+    progress_callback: Callable[[Progress], None] | None,
+    extra: dict,
+    ffmpeg: str | None,
+) -> dict:
+    """yt-dlp options for one download, with or without an ffmpeg to run."""
+    if ffmpeg is not None:
+        return _base_opts() | {
+            "format": "bestaudio/best",
+            "outtmpl": outtmpl,
+            "postprocessors": _postprocessors(target_format),
+            "progress_hooks": [_make_progress_hook(progress_callback)],
+        } | _art_opts(target_format) | extra
+    # Nothing to spawn: yt-dlp saves the stream as it comes and the conversion
+    # happens in this process afterwards (`_convert_downloads`), so none of its
+    # postprocessors - every one of them an ffmpeg run - are configured. The
+    # thumbnail is still worth downloading: the video frame stands in for a
+    # cover until a music database supplies one, and a container that cannot
+    # hold a picture goes without, exactly as it does on the ffmpeg path.
+    return _base_opts() | {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "progress_hooks": [_make_progress_hook(progress_callback)],
+        "writethumbnail": target_format in ART_FORMATS,
+    } | extra
 
 
 def _postprocessors(target_format: str) -> list[dict]:
@@ -580,6 +1021,8 @@ def _resolve_entry(entry: dict) -> SearchResult | None:
 
 def _inspect_url(url: str) -> SearchResult:
     """Turn a pasted link into a candidate: album/playlist, or a single track."""
+    if spotify.handles(url):
+        return _spotify_result(url)
     result = _resolve_entry({"url": url})
     if result is None:
         raise DownloadError(f"Nothing to download at {url}")
