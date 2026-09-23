@@ -37,6 +37,8 @@
   "status_tagging": "buscando artista, álbum y carátula ...",
   "status_saved_track": "Guardado \"{title}\" como {format} en {path}",
   "status_saved_album": "Guardados {count} de {total} temas en {folder}",
+  "status_saved_album_present": "Guardados {count} de {total} temas en {folder} · {present} ya estaban",
+  "status_all_present": "Nada que bajar: los {total} temas ya están en {folder}",
   "status_skipped": "{count} sin descargar · p. ej. «{title}»: {reason}",
   "status_error": "Error: {message}",
   "subtitle_album": "Álbum",

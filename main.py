@@ -326,7 +326,8 @@ def main(page: ft.Page) -> None:
     detail_text = ft.Text(
         size=12, color=ft.Colors.AMBER_300, selectable=True, visible=False
     )
-    skipped: list[Progress] = []
+    skipped: list[Progress] = []  # tracks this run could not fetch
+    present: list[Progress] = []  # tracks it left alone: already in the folder
 
     row_buttons: list[ft.IconButton] = []
 
@@ -461,6 +462,12 @@ def main(page: ft.Page) -> None:
             parts.append(progress.title)
 
         if progress.stage == "skipped":
+            if progress.note == engine.ALREADY_THERE:
+                # Not a failure and not a complaint: the file is where the
+                # download would have put it, which is what a retry is for. It
+                # is counted, and said once, in the run's summary.
+                present.append(progress)
+                return
             # Which tracks were left out, and why. Kept after the download ends:
             # "saved 21 of 40" is only half an answer without this.
             skipped.append(progress)
@@ -510,17 +517,38 @@ def main(page: ft.Page) -> None:
             )
         render_status(" · ".join(parts), ft.Colors.BLUE_200)
 
+    def album_folder(tracks: list[Track], album: AlbumInfo) -> Path:
+        """The folder a run wrote to, whether or not it had anything to write.
+
+        An empty list is a run that found everything already there, and the
+        folder is still the album's - not the download root, which is where a
+        single track without an album lands.
+        """
+        if tracks:
+            return tracks[0].path.parent
+        return (state.download_root or Path()) / album.folder
+
     def render_success(tracks: list[Track], album: AlbumInfo | None) -> None:
         progress_bar.value = 1
         render_badge(t("badge_done"), ft.Colors.GREEN_400)
         if album is not None:
-            destination = tracks[0].path.parent if tracks else state.download_root
+            destination = album_folder(tracks, album)
+            if not tracks and present:
+                # A retry of a playlist that was already complete: nothing was
+                # missing, and "0 of 40 saved" would say the opposite.
+                render_status(
+                    t("status_all_present", total=album.track_count, folder=destination),
+                    ft.Colors.GREEN_300,
+                )
+                return
+            key = "status_saved_album_present" if present else "status_saved_album"
             render_status(
                 t(
-                    "status_saved_album",
+                    key,
                     count=len(tracks),
                     total=album.track_count,
                     folder=destination,
+                    present=len(present),
                 ),
                 ft.Colors.GREEN_300,
             )
@@ -758,6 +786,7 @@ def main(page: ft.Page) -> None:
         render_badge(t("badge_downloading"), ft.Colors.BLUE_300)
         progress_bar.visible = True
         skipped.clear()
+        present.clear()
         detail_text.visible = False
         set_busy(True)
         safe_update()

@@ -37,6 +37,8 @@
   "status_tagging": "looking up artist, album and cover art ...",
   "status_saved_track": "Saved \"{title}\" as {format} in {path}",
   "status_saved_album": "Saved {count} of {total} tracks to {folder}",
+  "status_saved_album_present": "Saved {count} of {total} tracks to {folder} · {present} were already there",
+  "status_all_present": "Nothing to download: all {total} tracks are already in {folder}",
   "status_skipped": "{count} not downloaded · e.g. \"{title}\": {reason}",
   "status_error": "Error: {message}",
   "subtitle_album": "Album",
