@@ -58,7 +58,10 @@ afterwards — "Change folder" moves it. Downloads are one folder per album.
   length, so a live take does not stand in for the studio recording. What
   Spotify's embed publishes is what the dialog shows: a playlist longer than
   100 tracks is cut there (the dialog says so), and a private one cannot be
-  read at all.
+  read at all. A track that did not come through is not lost either: the app
+  says which one it was and why, and finishes it the next time it starts — or
+  when the retry button in the footer is pressed — without fetching again what
+  is already in the folder.
 - **Tags and cover art** come from a music database, not from the video: iTunes
   Search first (one request carries album, album artist, track and disc number,
   genre and a square cover), Deezer as fallback. A track the databases do not
@@ -98,6 +101,7 @@ install an APK from inside itself.
 | What | Path |
 | --- | --- |
 | Settings | `~/.config/Cadenza/config.json` (Linux), `%APPDATA%\Cadenza\config.json` (Windows), `~/Library/Application Support/Cadenza/config.json` (macOS), the app's own data directory on Android |
+| Tracks still missing | `pending.json`, next to the settings file above: what a playlist download could not fetch, until a retry gets it |
 | Music | the folder chosen on the first run, one directory per album |
 | Flet client | `~/.flet/client/`, unpacked on the first launch |
 

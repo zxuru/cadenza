@@ -60,6 +60,10 @@
   "cancel": "Cancel",
   "download_album": "Download album",
   "update_check": "Check for updates",
+  "retry_pending": {
+    "one": "Retry 1 track",
+    "many": "Retry {count} tracks"
+  },
   "update_checking": "Checking for updates ...",
   "update_current": "Up to date (v{version})",
   "update_local": "Not a release build ({version}): updates are off",

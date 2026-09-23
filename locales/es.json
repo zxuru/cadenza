@@ -60,6 +60,10 @@
   "cancel": "Cancelar",
   "download_album": "Descargar álbum",
   "update_check": "Buscar actualización",
+  "retry_pending": {
+    "one": "Reintentar 1 tema",
+    "many": "Reintentar {count} temas"
+  },
   "update_checking": "Buscando actualizaciones ...",
   "update_current": "Al día (v{version})",
   "update_local": "No es una build de release ({version}): sin actualizaciones",

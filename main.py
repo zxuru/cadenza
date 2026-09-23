@@ -18,6 +18,7 @@ from flet.utils.platform_utils import is_android, is_mobile
 import bundle
 import engine
 import i18n
+import pending
 import settings as config
 import update
 import version
@@ -325,7 +326,7 @@ def main(page: ft.Page) -> None:
     detail_text = ft.Text(
         size=12, color=ft.Colors.AMBER_300, selectable=True, visible=False
     )
-    skipped: list[tuple[str, str]] = []
+    skipped: list[Progress] = []
 
     row_buttons: list[ft.IconButton] = []
 
@@ -343,6 +344,14 @@ def main(page: ft.Page) -> None:
         icon=ft.Icons.REFRESH,
         on_click=lambda event: press_update(event),
     )
+    # Tracks an earlier run could not fetch: the button appears when there are
+    # any, and finishing them costs one lookup each - what is on disk stays.
+    retry_button = ft.TextButton(
+        "",
+        icon=ft.Icons.REPLAY,
+        visible=False,
+        on_click=lambda _: page.run_task(retry_pending),
+    )
     # A phone installs nothing from inside the app: a newer release is offered
     # as its page, which the browser downloads the APK from - and the browser
     # is the one place that is already signed in to GitHub, which a private
@@ -350,7 +359,7 @@ def main(page: ft.Page) -> None:
     url_launcher = ft.UrlLauncher()
     if not desktop:
         page.services.append(url_launcher)
-    pending: dict[str, str] = {}  # release page waiting for the button
+    release_page: dict[str, str] = {}  # release page waiting for the button
     # True while a search or a download runs: an update never restarts the app
     # out from under one.
     working = False
@@ -380,7 +389,7 @@ def main(page: ft.Page) -> None:
 
     def render_update_action(download: bool, page_url: str = "") -> None:
         """Make the footer button the next thing it can do."""
-        pending["page"] = page_url
+        release_page["page"] = page_url
         update_button.content = t("update_download") if download else t("update_check")
         update_button.icon = ft.Icons.OPEN_IN_NEW if download else ft.Icons.REFRESH
 
@@ -390,6 +399,7 @@ def main(page: ft.Page) -> None:
         query_field.disabled = busy
         search_btn.disabled = busy
         format_dropdown.disabled = busy
+        retry_button.disabled = busy
         for button in row_buttons:
             button.disabled = busy
 
@@ -453,10 +463,12 @@ def main(page: ft.Page) -> None:
         if progress.stage == "skipped":
             # Which tracks were left out, and why. Kept after the download ends:
             # "saved 21 of 40" is only half an answer without this.
-            skipped.append((progress.title or "?", progress.note))
-            title, note = skipped[-1]
+            skipped.append(progress)
             detail_text.value = t(
-                "status_skipped", count=len(skipped), title=title, reason=note
+                "status_skipped",
+                count=len(skipped),
+                title=progress.title or "?",
+                reason=progress.note,
             )
             detail_text.visible = True
             return
@@ -726,9 +738,19 @@ def main(page: ft.Page) -> None:
             set_busy(False)
             safe_update()
 
-    async def run_download(target: str, album: AlbumInfo | None) -> None:
-        target_format = format_dropdown.value or engine.DEFAULT_FORMAT
-        destination = state.download_root
+    async def run_download(
+        target: str,
+        album: AlbumInfo | None,
+        root: Path | None = None,
+        target_format: str | None = None,
+    ) -> None:
+        """Download one link.
+
+        A retry passes the folder and the format that link was asked for with,
+        because the ones in the footer belong to what is being asked for now.
+        """
+        target_format = target_format or format_dropdown.value or engine.DEFAULT_FORMAT
+        destination = root or state.download_root
         if destination is None:
             render_error(t("status_need_folder"))
             return
@@ -753,11 +775,13 @@ def main(page: ft.Page) -> None:
                 lambda progress: events.put(("progress", progress)),
             )
         )
+        reported = False
         try:
             while True:
                 # Worker threads must not touch controls: every update happens
                 # here, on the event loop, driven by the event queue.
                 if drain_events(events, target_format, album):
+                    reported = True
                     safe_update()
                 if worker.done() and events.empty():
                     break
@@ -769,6 +793,7 @@ def main(page: ft.Page) -> None:
             set_busy(False)
             progress_bar.visible = False
             safe_update()
+        remember(target, destination, target_format, reported)
 
     def drain_events(
         events: queue.SimpleQueue[tuple[str, object]],
@@ -787,6 +812,68 @@ def main(page: ft.Page) -> None:
                 render_error(str(payload))
             updated = True
         return updated
+
+    def remember(
+        target: str, destination: Path, target_format: str, reported: bool
+    ) -> None:
+        """Write down what this run did not fetch, so a later one can finish it.
+
+        Everything reported as left out is kept, except the tracks that are
+        already on disk - those are not failures. A run that got as far as
+        reporting anything also settles the whole playlist for that folder and
+        format: what it did not complain about is in, so nothing from it stays
+        on the list. A run that failed before reading the link (a playlist
+        Spotify would not serve, a machine with no network) settles nothing.
+        """
+        failures = [
+            pending.Item(
+                url=target,
+                root=str(destination),
+                format=target_format,
+                index=event.track_index,
+                title=event.title or "?",
+                reason=event.note,
+            )
+            for event in skipped
+            if event.track_index is not None and event.note != engine.ALREADY_THERE
+        ]
+        items = pending.load()
+        if reported:
+            items = pending.without(items, (target, str(destination), target_format))
+        pending.save(pending.merged(items, failures))
+        render_pending()
+
+    def render_pending() -> None:
+        """The footer's retry button, or nothing when there is nothing to retry."""
+        count = len(pending.load())
+        retry_button.content = t.plural("retry_pending", count)
+        retry_button.visible = count > 0
+        safe_update()
+
+    async def retry_pending(auto: bool = False) -> None:
+        """Finish the tracks earlier runs left behind, one link at a time.
+
+        Each entry carries the folder and the format it was asked for with, and
+        `run_download` leaves what is already on disk alone - so a retry costs
+        one lookup per missing track and nothing else.
+        """
+        if working:
+            return
+        items = pending.due(pending.load()) if auto else pending.load()
+        if not items:
+            render_pending()
+            return
+        if state.download_root is None:
+            ensure_folder()
+            return
+        for url, root, target_format in dict.fromkeys(item.place for item in items):
+            try:
+                album = await asyncio.to_thread(engine.probe_album, url)
+            except Exception as err:  # noqa: BLE001 - the link itself did not read
+                render_error(str(err))
+                return  # nothing was tried: the list stays exactly as it was
+            await run_download(url, album, root=Path(root), target_format=target_format)
+        render_pending()
 
     # ------------------------------------------------------------------- updates
 
@@ -899,7 +986,7 @@ def main(page: ft.Page) -> None:
 
     def press_update(_) -> None:
         """The one entry point: the button, and what it does next."""
-        if page_url := pending.get("page"):
+        if page_url := release_page.get("page"):
             page.run_task(open_release_page, page_url)
         else:
             page.run_task(check_for_update)
@@ -980,7 +1067,7 @@ def main(page: ft.Page) -> None:
         status_text,
         detail_text,
         ft.Row(
-            [version_label, update_button],
+            [version_label, update_button, retry_button],
             wrap=True,
             spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -997,6 +1084,12 @@ def main(page: ft.Page) -> None:
 
     if UPDATED_TO:
         render_update(t("updated_to", version=UPDATED_TO), ft.Colors.GREEN_300)
+
+    render_pending()
+    if pending.due(pending.load()) and state.download_root is not None:
+        # Tracks an earlier run could not fetch: finishing them is what that
+        # download was asked for, so nobody has to ask a second time.
+        page.run_task(retry_pending, True)
 
     # Everything is laid out: show the window at its real size.
     page.run_task(reveal_window)

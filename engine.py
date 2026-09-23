@@ -43,6 +43,9 @@ MATCH_RETRY_GIVE_UP = 3  # refusals in a row that end the retry pass
 # refused says nothing about whether the track exists, a miss does.
 REFUSED = "YouTube refused the request (rate limit or sign-in check)"
 NO_MATCH = "no match on YouTube"
+# Not a failure: the file is already where the download would put it (a run
+# that was cut short and is being finished), so it is not remembered as missing.
+ALREADY_THERE = "already in the folder"
 
 # Format key -> audio quality passed to FFmpegExtractAudio. `None` leaves the
 # codec defaults alone, which is what the lossless and PCM targets want.
@@ -439,7 +442,7 @@ def _download_spotify(
     pending: list[tuple[int, spotify.Track]] = []
     for index, entry in enumerate(playlist.tracks, start=1):
         if _destination(out_dir, index, entry.title, numbered, target_format).is_file():
-            _report_skip(progress_callback, entry, index, total, "already in the folder")
+            _report_skip(progress_callback, entry, index, total, ALREADY_THERE)
             continue
         pending.append((index, entry))
 
