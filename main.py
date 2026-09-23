@@ -193,9 +193,10 @@ def check_updates() -> int:
         f"{'token':<12} {'given' if token else 'none'}",
     ]
     if found.release is not None:
-        lines.append(
-            f"{'release':<12} {found.release.tag} is newer: the button installs it"
-        )
+        # A local build reads the feed like any other, but nothing is put in
+        # its place: the line says what the button would do, not what it may.
+        how = "the button installs it" if update.installable() else "this build does not replace itself"
+        lines.append(f"{'release':<12} {found.release.tag} is newer: {how}")
     elif found.needs_token:
         lines.append(f"{'release':<12} unknown (private repository, no token)")
     elif found.error:

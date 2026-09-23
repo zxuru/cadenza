@@ -62,7 +62,7 @@
   "update_check": "Buscar actualización",
   "update_checking": "Buscando actualizaciones ...",
   "update_current": "Al día (v{version})",
-  "update_local": "Ejecutando desde el código ({version}): sin actualizaciones",
+  "update_local": "No es una build de release ({version}): sin actualizaciones",
   "update_private": "La actualización respondió 404: un repositorio privado necesita update_token en config.json",
   "update_error": "No se pudo comprobar la actualización: {message}",
   "update_found": "v{version} disponible: descargando ...",

@@ -20,7 +20,9 @@ the whole `.app` bundle - be moved over while it runs; Windows refuses to
 delete a mapped executable but allows it to be renamed, so the old image steps
 aside and `cleanup()` sweeps it up on the next launch. A phone cannot install
 an APK from inside the app: `Release.page` is what a browser is sent to
-instead, and `installable()` says which of the two this build gets.
+instead, and `installable()` says which of the two this build gets - a build
+made by hand gets neither, because the `+local` in its version means it is
+somebody's own build and no release is put in its place.
 """
 
 from __future__ import annotations
@@ -212,10 +214,17 @@ def check(token: str | None = None) -> Result:
 def installable() -> bool:
     """True when this build can replace itself: a frozen desktop app.
 
-    A source checkout has no installed build to replace, and a phone cannot
-    install an APK from inside the app - `Release.page` is the way there.
+    A source checkout has no installed build to replace, a phone cannot install
+    an APK from inside the app - `Release.page` is the way there - and a build
+    made by hand is left alone: the `+local` in its version is what says so
+    (`version.is_local()`), because replacing someone's own build with the
+    release the feed happens to carry is losing work, not updating.
     """
-    return bool(getattr(sys, "frozen", False)) and not settings.is_mobile()
+    return (
+        bool(getattr(sys, "frozen", False))
+        and not settings.is_mobile()
+        and not version.is_local()
+    )
 
 
 def executable_path() -> Path:

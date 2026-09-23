@@ -62,7 +62,7 @@
   "update_check": "Check for updates",
   "update_checking": "Checking for updates ...",
   "update_current": "Up to date (v{version})",
-  "update_local": "Running from source ({version}): updates are off",
+  "update_local": "Not a release build ({version}): updates are off",
   "update_private": "The update feed answered 404: a private repository needs update_token in config.json",
   "update_error": "Could not check for updates: {message}",
   "update_found": "v{version} available: downloading ...",
