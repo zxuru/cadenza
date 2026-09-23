@@ -260,7 +260,7 @@ def _match_key(
         delta = abs(duration - candidate.duration)
         if delta > DURATION_TOLERANCE:
             return None
-    return (rank, _artist_score(artist, candidate.artist), -delta)
+    return (rank, artist_score(artist, candidate.artist), -delta)
 
 
 def title_score(source: str, candidate: str) -> int:
@@ -276,7 +276,7 @@ def title_score(source: str, candidate: str) -> int:
     return 1 if source in candidate or candidate in source else 0
 
 
-def _artist_score(source: str | None, candidate: str) -> int:
+def artist_score(source: str | None, candidate: str) -> int:
     """Shared words between the two names: "Kevin MacLeod Archive" is Kevin MacLeod."""
     if not source or not candidate:
         return 0

@@ -28,9 +28,18 @@ import transcode
 MUSIC_SEARCH_URL = "https://music.youtube.com/search?q={query}"
 SEARCH_LIMIT = 10
 RESOLVE_WORKERS = 8
-# Uploads resolved per playlist track before it is given up on: the ones whose
-# title matches, best first. Resolving is what a length can be checked against.
-MATCH_TRIES = 3
+# YouTube Music's own "Songs" filter, the `sp` its interface puts on the URL: a
+# protobuf written down as base64. Matching a playlist wants the catalogue of
+# releases, not the whole page - the general results for a song with a fandom
+# behind it are its lyrics videos, its animatics and its covers - and asking
+# for songs is how the same search that finds none of them finds it first. If
+# Spotify's catalogue were to move under it, the unfiltered search is still
+# there (see `_candidate_sources`).
+SONGS_FILTER = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
+# Uploads resolved for one track before it is given up on. One is the usual
+# case - the first candidate is the release - and the rest are for a catalogue
+# where it is buried under covers.
+MATCH_LOOKUPS = 6
 # Playlist matching resolves an upload per track, and YouTube starts refusing a
 # burst of those ("Sign in to confirm you're not a bot"). Fewer workers than a
 # search page uses, a stagger between the requests and a second try for what was
@@ -643,22 +652,48 @@ def _lookup_reason(error: Exception) -> str:
 def _match_track(track: spotify.Track) -> str | None:
     """The upload that is this track, or None when nothing close enough exists.
 
-    A search hit carries nothing but a title, so the best few of them - the ones
-    whose title matches, in YouTube's own order - are resolved before one is
-    picked, and checked the way the database lookup checks its own candidates:
-    a length Spotify cannot argue with. That is what keeps a live take or an
-    extended edit out of the download.
+    A search hit carries nothing but a title, so candidates are resolved - the
+    song catalogue first, then the whole of YouTube Music, then plain YouTube -
+    until one turns out to be this recording: the artist the playlist names,
+    under the title it names, at a length it cannot argue with (`_recording_key`).
+    Taking the first hit whose length fits is what downloads a cover, and a
+    catalogue with a fandom behind it has those in front of the release.
     """
     query = " ".join(part for part in (track.title, track.artist) if part)
-    songs = [
-        entry for entry in _music_candidates(query) if not _is_playlist_entry(entry)
-    ]
-    for candidates in (songs, _video_candidates(query)):
-        for candidate in _ranked(candidates, track):
+    best: SearchResult | None = None
+    best_key: tuple[int, int, int, int, float] | None = None
+    lookups = 0
+    for entries in _candidate_sources(query):
+        for candidate in _ranked(entries, track):
+            if lookups == MATCH_LOOKUPS:
+                return best.url if best is not None else None
+            lookups += 1
             resolved = _resolve_entry(candidate)
-            if resolved is not None and _same_recording(resolved, track):
-                return resolved.url
-    return None
+            if resolved is None:
+                continue
+            key = _recording_key(resolved, track)
+            if key is None:
+                continue
+            if best_key is None or key > best_key:
+                best, best_key = resolved, key
+                if key[0] > 0 and key[2] == 3:
+                    # The playlist's own artist, under the title it names: there
+                    # is nothing further down that could be a better answer.
+                    return best.url
+        if best_key is not None and best_key[0] > 0:
+            break  # right artist: no reason to go looking in the next catalogue
+    return best.url if best is not None else None
+
+
+def _candidate_sources(query: str):
+    """Search hits for one track, in the order worth trying them.
+
+    Lazy on purpose: the second search is never made when the release was the
+    first hit of the first one, which is the usual case.
+    """
+    yield _music_candidates(query, songs_only=True)
+    yield _music_candidates(query)
+    yield _video_candidates(query)
 
 
 def _ranked(candidates: list[dict], track: spotify.Track) -> list[dict]:
@@ -669,7 +704,7 @@ def _ranked(candidates: list[dict], track: spotify.Track) -> list[dict]:
         if (rank := _title_rank(entry, track))
     ]
     scored.sort(key=lambda pair: -pair[0])
-    return [entry for _, entry in scored[:MATCH_TRIES]]
+    return [entry for _, entry in scored]
 
 
 def _title_rank(candidate: dict, track: spotify.Track) -> int:
@@ -680,19 +715,49 @@ def _title_rank(candidate: dict, track: spotify.Track) -> int:
     )
 
 
-def _same_recording(resolved: SearchResult, track: spotify.Track) -> bool:
-    """True when a resolved upload is this track and not another recording of it.
+def _recording_key(
+    resolved: SearchResult, track: spotify.Track
+) -> tuple[int, int, int, int, float] | None:
+    """Rank a resolved upload against one playlist track; None when it is not it.
 
-    The playlist states how long the track is and a resolved entry carries the
-    upload's own length: a difference no re-upload explains is a live take, a
-    longer edit or a cover. It is the test the database lookup makes, on the
-    length Spotify gave us rather than on the video's.
+    The artist comes first, and the artist the playlist names before the ones
+    it features - because that is what tells a release from the many recordings
+    that copy it. A label's upload of a song carries its artist, its album and
+    its release date, which `SearchResult.music` reports; a cover, an animatic
+    or a re-upload carries a channel name and nothing else, and its channel
+    name is not the artist. The length is the last word, the way it is for the
+    database lookup: a difference no re-upload explains is another recording.
     """
     if resolved.kind != "track":
-        return False
-    if not track.duration or not resolved.duration:
-        return True
-    return abs(track.duration - resolved.duration) <= metadata.DURATION_TOLERANCE
+        return None
+    rank = metadata.title_score(
+        metadata.normalize(track.title), metadata.normalize(resolved.title)
+    )
+    if not rank:
+        return None
+    delta = 0.0
+    if track.duration and resolved.duration:
+        delta = abs(track.duration - resolved.duration)
+        if delta > metadata.DURATION_TOLERANCE:
+            return None
+    return (
+        metadata.artist_score(_lead_artist(resolved.artist), _lead_artist(track.artist)),
+        metadata.artist_score(resolved.artist, track.artist or ""),
+        rank,
+        int(resolved.music),
+        -delta,
+    )
+
+
+def _lead_artist(artist: str | None) -> str | None:
+    """The first name of a credit list: "A, B & C" is A's recording.
+
+    Spotify and YouTube both list the main artist first, and comparing the
+    whole lists would count words like "music" or "cast" as a match.
+    """
+    if not artist:
+        return None
+    return artist.split(",")[0].strip() or None
 
 
 def _stem(index: int, title: str, numbered: bool) -> str:
@@ -941,9 +1006,16 @@ def _is_playlist_entry(entry: dict) -> bool:
     return "/browse/MPREb_" in url or "playlist?list=" in url
 
 
-def _music_candidates(query: str) -> list[dict]:
-    """Search YouTube Music, in its own relevance order."""
-    entries = _flat_entries(MUSIC_SEARCH_URL.format(query=quote(query)))
+def _music_candidates(query: str, songs_only: bool = False) -> list[dict]:
+    """Search YouTube Music, in its own relevance order.
+
+    `songs_only` asks for the song catalogue instead of the whole page, which is
+    what matching a playlist track wants: the release, not its lyrics video.
+    """
+    url = MUSIC_SEARCH_URL.format(query=quote(query))
+    if songs_only:
+        url += f"&sp={SONGS_FILTER}"
+    entries = _flat_entries(url)
     candidates = [
         entry
         for entry in entries
