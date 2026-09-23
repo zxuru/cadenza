@@ -120,6 +120,15 @@ PyAV and the bundle carries ffmpeg's libraries instead. mutagen writes the tags
 and the picture. The UI is [Flet](https://flet.dev), which is Flutter with a
 Python backend.
 
+YouTube asks an address to "sign in to confirm you're not a bot" long before it
+asks an account, and it asks its web clients first: when that happens, the app
+falls back to YouTube's app client (`android`), which answers when the web ones
+do not. If that wall covers everything, the way through is the cookies of a
+browser that is signed in: name it in `CADENZA_COOKIES_FROM_BROWSER`, or as
+`cookies_from_browser` in the settings file, and yt-dlp takes the session from
+there (`firefox`, `chrome`, `chromium`, `brave`, `edge`, `opera`, `vivaldi`,
+`safari`). Nothing is read from a browser unless one of the two names one.
+
 ## Building
 
 `BUILD.md` has the whole story (what ends up inside each artifact and why, the

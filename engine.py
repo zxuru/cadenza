@@ -22,6 +22,7 @@ from yt_dlp.utils import DownloadError as YtDlpDownloadError
 
 import bundle
 import metadata
+import settings
 import spotify
 import transcode
 
@@ -91,6 +92,11 @@ BUNDLED_RUNTIME_PATHS = ("jsrt/qjs.exe", "jsrt/qjs")
 # get theirs from imageio-ffmpeg; a platform whose wheels have none (Android)
 # has to ship a binary, and this is where it is expected to sit.
 BUNDLED_FFMPEG_PATHS = ("ffmpeg", "ffmpeg.exe")
+
+# The browser whose cookies yt-dlp may send, when the machine says so (see
+# `_cookie_opts`): the way past a YouTube sign-in wall that also hits `android`.
+COOKIES_ENV = "CADENZA_COOKIES_FROM_BROWSER"
+_COOKIES: dict | None = None
 
 # YouTube Music titles come prefixed with the result kind ("Album - Foo").
 _TITLE_PREFIXES = ("Album - ", "Playlist - ", "Mix - ")
@@ -984,7 +990,34 @@ def _base_opts() -> dict:
         "noprogress": True,
         "ffmpeg_location": find_ffmpeg(),
         "js_runtimes": find_js_runtimes(),
-    }
+        # YouTube challenges its web clients long before its app ones. The
+        # default set is asked first, so nothing changes while it answers, and
+        # `android` stands behind it for the moment YouTube asks this address
+        # to sign in - measured: the default refused a request that android
+        # served, media and all. Not a preference: a fallback.
+        "extractor_args": {"youtube": {"player_client": ["default", "android"]}},
+    } | _cookie_opts()
+
+
+def _cookie_opts() -> dict:
+    """yt-dlp's `cookiesfrombrowser`, when this machine asked for one.
+
+    A browser signed in to YouTube is what gets past a wall the app's own
+    requests hit - that is the escape hatch yt-dlp's error message points at -
+    but the app never reads a browser's cookie store by itself: it does when
+    `CADENZA_COOKIES_FROM_BROWSER` names the browser (`firefox`, `chrome`,
+    `chromium`, `brave`, `edge`, `opera`, `vivaldi`, `safari`) or when
+    `cookies_from_browser` says so in the settings file. Read once, because
+    every yt-dlp call asks for these options.
+    """
+    global _COOKIES
+    if _COOKIES is None:
+        browser = (
+            os.environ.get(COOKIES_ENV, "").strip()
+            or (settings.Settings.load().cookies_from_browser or "")
+        )
+        _COOKIES = {"cookiesfrombrowser": (browser,)} if browser else {}
+    return _COOKIES
 
 
 def _ydl(extract_flat: bool | str = False, **overrides):

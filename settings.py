@@ -80,6 +80,10 @@ class Settings:
         # updater also takes it from CADENZA_UPDATE_TOKEN. Nothing is checked
         # or installed unless the user asks for it (see update.py).
         self.update_token: str | None = None
+        # Browser to take YouTube cookies from, for a machine whose requests
+        # YouTube asks to sign in (see `engine._cookie_opts`). Nothing is read
+        # from a browser unless this names one.
+        self.cookies_from_browser: str | None = None
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:
@@ -97,6 +101,9 @@ class Settings:
         token = raw.get("update_token")
         if isinstance(token, str) and token.strip():
             settings.update_token = token.strip()
+        browser = raw.get("cookies_from_browser")
+        if isinstance(browser, str) and browser.strip():
+            settings.cookies_from_browser = browser.strip()
         return settings
 
     def save(self) -> None:
@@ -105,5 +112,6 @@ class Settings:
             "download_root": str(self.download_root) if self.download_root else None,
             "format": self.format,
             "update_token": self.update_token,
+            "cookies_from_browser": self.cookies_from_browser,
         }
         self.path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
