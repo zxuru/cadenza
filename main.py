@@ -328,6 +328,10 @@ def main(page: ft.Page) -> None:
     )
     skipped: list[Progress] = []  # tracks this run could not fetch
     present: list[Progress] = []  # tracks it left alone: already in the folder
+    # Tracks it kept, with something worth saying about them: silence inside
+    # the audio, or a length nothing here could measure. Not a complaint and
+    # not a miss - the file is in the folder - so it never counts as a skip.
+    noted: list[Progress] = []
 
     row_buttons: list[ft.IconButton] = []
 
@@ -476,6 +480,22 @@ def main(page: ft.Page) -> None:
                 count=len(skipped),
                 title=progress.title or "?",
                 reason=progress.note,
+            )
+            detail_text.visible = True
+            return
+
+        if progress.stage == "attention":
+            # Nothing was refused and nothing is missing: a track that was kept
+            # has something about it worth saying - silence where a player
+            # would go quiet, or a length nothing here could measure. Said the
+            # same way as what was left out, and kept after the run ends,
+            # because it is about a file that is still in the folder.
+            noted.append(progress)
+            detail_text.value = t(
+                "status_noted",
+                count=len(noted),
+                title=progress.title or "?",
+                note=progress.note,
             )
             detail_text.visible = True
             return
@@ -787,6 +807,7 @@ def main(page: ft.Page) -> None:
         progress_bar.visible = True
         skipped.clear()
         present.clear()
+        noted.clear()
         detail_text.visible = False
         set_busy(True)
         safe_update()

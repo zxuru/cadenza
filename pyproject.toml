@@ -57,3 +57,13 @@ exclude = [
 # in for cover art until a music database supplies one. Both come from Flet's
 # own wheel index for Android.
 dependencies = ["av", "pillow"]
+
+# The tests: every one of them makes its own audio with ffmpeg and never
+# leaves its own `tmp_path`, except the ones marked `network`, which download
+# real tracks - asked for (`pytest -m network`), never assumed.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = '-m "not network"'
+markers = [
+    "network: downloads real tracks; needs the network and YouTube's patience",
+]

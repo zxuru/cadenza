@@ -40,6 +40,7 @@
   "status_saved_album_present": "Saved {count} of {total} tracks to {folder} · {present} were already there",
   "status_all_present": "Nothing to download: all {total} tracks are already in {folder}",
   "status_skipped": "{count} not downloaded · e.g. \"{title}\": {reason}",
+  "status_noted": "{count} worth a look · e.g. \"{title}\": {note}",
   "status_error": "Error: {message}",
   "subtitle_album": "Album",
   "subtitle_spotify": "Spotify",

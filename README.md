@@ -70,6 +70,13 @@ afterwards — "Change folder" moves it. Downloads are one folder per album.
   know keeps whatever tags the upload carried.
 - **Cover art** is 4:3 when it comes from the video thumbnail, because that is
   the shape players frame covers in, and square when it comes from a database.
+- **Nothing half-finished is kept.** What a download produces is played through
+  and measured against the length its own source stated — a container claims its
+  full length in its header even after the audio behind it is gone, so what the
+  tag says proves nothing. A track that comes up short is deleted, reported like
+  any other one left out and fetched again next run; and nothing is ever written
+  under a track's own name until it is whole, the conversion and the tags going
+  to a `.part` file that is moved into place in one step.
 
 | Format | Linux | Windows | macOS | Android |
 | --- | --- | --- | --- | --- |
@@ -128,6 +135,26 @@ browser that is signed in: name it in `CADENZA_COOKIES_FROM_BROWSER`, or as
 `cookies_from_browser` in the settings file, and yt-dlp takes the session from
 there (`firefox`, `chrome`, `chromium`, `brave`, `edge`, `opera`, `vivaldi`,
 `safari`). Nothing is read from a browser unless one of the two names one.
+
+Two things a download can lose are refused rather than accepted. A fragment
+yt-dlp cannot fetch - whose own default is to skip it and hand back the rest as
+if nothing were missing, leaving a hole that plays as a cut - fails the whole
+track instead, so the track is reported and the retry list picks it up. And a
+file that comes up short when it is played through is thrown away instead of
+kept as a finished track: that includes one an earlier run was killed inside,
+which is what the "already in the folder" check now measures rather than trusts.
+What YouTube warns about along the way (formats a challenge left out, an
+experiment it switched on for the session) is kept and shown with the failure it
+explains, rather than silenced.
+
+## Tests
+
+`pip install -r requirements-dev.txt`, then `pytest`: everything that needs
+nothing but the machine it is on - the length check, the silence check, the
+staging, the retry list - makes its own audio with ffmpeg and never leaves a
+temporary directory, so a green run means the same thing everywhere.
+`pytest -m network` adds the ones that download real tracks, which is how the
+checks are proven against the pipeline that produces and keeps files.
 
 ## Building
 

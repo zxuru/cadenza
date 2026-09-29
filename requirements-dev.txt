@@ -1,0 +1,4 @@
+# Tools the tests need and the app does not: the runtime dependencies are in
+# requirements.txt, and `pip install -r requirements-dev.txt` is what makes
+# `pytest` run.
+pytest>=8

@@ -15,6 +15,7 @@ desktop build carries neither.
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 
 # Target format -> (PyAV encoder, container format, file extension, sample
@@ -51,6 +52,13 @@ def can_convert(target_format: str) -> bool:
 def convert(source: Path, target_format: str, destination: Path) -> None:
     """Re-encode `source` into `destination` as `target_format`.
 
+    The audio is written beside `destination` and moved into place only once it
+    is whole, because `destination` is a name a folder offers to play and a
+    second run reads as "already downloaded": an encode cut short must leave a
+    `.part` file that nothing mistakes for a track, not a track with the tail of
+    the song missing. A kill so hard the cleanup cannot run leaves that `.part`
+    behind, and the next conversion writes over it.
+
     Raises RuntimeError when there is no encoder for it here - the caller has
     already asked `can_convert`.
     """
@@ -61,31 +69,38 @@ def convert(source: Path, target_format: str, destination: Path) -> None:
     if encoder is None:
         raise RuntimeError(f"no {target_format} encoder is available")
 
-    with av.open(str(source)) as incoming:
-        stream = incoming.streams.audio[0]
-        rate = stream.codec_context.rate
-        layout = stream.codec_context.layout
-        with av.open(str(destination), "w", format=container) as outgoing:
-            outgoing.metadata["encoder"] = f"Cadenza ({codec_name})"
-            out_stream = outgoing.add_stream(codec_name, rate=rate)
-            out_stream.layout = layout.name if layout is not None else "stereo"
-            out_stream.format = sample_format
-            if bitrate := BITRATES.get(target_format):
-                out_stream.bit_rate = bitrate
-            resampler = av.AudioResampler(
-                format=sample_format, layout=out_stream.layout, rate=rate
-            )
-            # Decode and re-encode frame by frame, then drain both ends: the
-            # encoder holds samples back until it has a full block.
-            for frame in incoming.decode(stream):
-                for resampled in resampler.resample(frame):
+    staging = destination.with_name(destination.name + ".part")
+    try:
+        with av.open(str(source)) as incoming:
+            stream = incoming.streams.audio[0]
+            rate = stream.codec_context.rate
+            layout = stream.codec_context.layout
+            with av.open(str(staging), "w", format=container) as outgoing:
+                outgoing.metadata["encoder"] = f"Cadenza ({codec_name})"
+                out_stream = outgoing.add_stream(codec_name, rate=rate)
+                out_stream.layout = layout.name if layout is not None else "stereo"
+                out_stream.format = sample_format
+                if bitrate := BITRATES.get(target_format):
+                    out_stream.bit_rate = bitrate
+                resampler = av.AudioResampler(
+                    format=sample_format, layout=out_stream.layout, rate=rate
+                )
+                # Decode and re-encode frame by frame, then drain both ends: the
+                # encoder holds samples back until it has a full block.
+                for frame in incoming.decode(stream):
+                    for resampled in resampler.resample(frame):
+                        for packet in out_stream.encode(resampled):
+                            outgoing.mux(packet)
+                for resampled in resampler.resample(None):
                     for packet in out_stream.encode(resampled):
                         outgoing.mux(packet)
-            for resampled in resampler.resample(None):
-                for packet in out_stream.encode(resampled):
+                for packet in out_stream.encode(None):
                     outgoing.mux(packet)
-            for packet in out_stream.encode(None):
-                outgoing.mux(packet)
+        # Both files are closed by here, so the finished one can take the name.
+        os.replace(staging, destination)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
 
 
 def cover_from(thumbnail: Path) -> bytes | None:

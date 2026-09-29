@@ -9,12 +9,15 @@ because a video's channel, category and thumbnail are not release metadata.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal, NamedTuple, Sequence
 from urllib.parse import quote
 
 import yt_dlp
@@ -49,6 +52,11 @@ MATCH_WORKERS = 4
 MATCH_STAGGER = 0.4  # seconds between the matching requests
 MATCH_RETRY_PAUSE = 3.0  # seconds between the retries of one pass
 MATCH_RETRY_GIVE_UP = 3  # refusals in a row that end the retry pass
+# Files already in a folder are measured before the folder fetches anything,
+# and one measurement is one file played all the way through: they are
+# independent of each other, so they are played together. Four at a time hides
+# each decode behind the next one without turning a laptop into a fan.
+VERIFY_WORKERS = 4
 # The one failure a retry can fix, and the one it cannot: a lookup YouTube
 # refused says nothing about whether the track exists, a miss does.
 REFUSED = "YouTube refused the request (rate limit or sign-in check)"
@@ -56,6 +64,58 @@ NO_MATCH = "no match on YouTube"
 # Not a failure: the file is already where the download would put it (a run
 # that was cut short and is being finished), so it is not remembered as missing.
 ALREADY_THERE = "already in the folder"
+
+# Why a track is left out: what was produced is not the whole track (see
+# `_short_of`). The two lengths ride along with it, so the file that was
+# rejected can be told apart from the source it was supposed to hold.
+INCOMPLETE = "incomplete file"
+# How much shorter than its own source a produced file may be without being
+# incomplete, as a band rather than a number: two seconds are nothing on a
+# seven-minute track and a ninth of a twenty-second intro, so the allowance
+# grows with the track (`_produce_tolerance`) between what a length counted in
+# whole seconds can be off by and the cap it is held to.
+SHORT_TOLERANCE = 2.0  # the cap
+MIN_SHORT_TOLERANCE = 1.0  # the floor: YouTube counts its seconds whole
+SHORT_TOLERANCE_SHARE = 0.02  # two percent of the track
+# Seconds one playback check may spend on a file before it gives up on it.
+DECODE_TIMEOUT = 120
+# Warnings one yt-dlp call keeps around to show with a failure (`_YtDlpLog`).
+KEPT_WARNINGS = 10
+# How far an *existing* file may be from the length Spotify gives the track
+# before it is fetched again: everything the matcher accepts a file for, added
+# to the most a produced file may be short by (the cap - a file allowed a
+# shorter allowance is a fortiori inside this one). Any file that was measured
+# when it was produced cannot be further from Spotify's length than this, so
+# this check never deletes and fetches again what the check at produce time
+# already took as whole - which is what a tighter number does to it, on every
+# run, for as long as the two catalogues keep disagreeing by what they are
+# given.
+EXISTING_TOLERANCE = metadata.DURATION_TOLERANCE + SHORT_TOLERANCE
+
+# ffmpeg describing the stream it opened ("Audio: flac, 48000 Hz, ..."), the
+# count `astats` gives once the whole file has been played through, and the
+# silences `silencedetect` marks on the way.
+_AUDIO_RATE = re.compile(r"Audio: [^,\n]+, (\d+) Hz")
+_AUDIO_SAMPLES = re.compile(r"Number of samples: (\d+)")
+_SILENCE = re.compile(r"silence_(start|end): (-?[\d.]+)")
+
+# Silence inside a track that is worth saying out loud: at least this long,
+# this far from both ends - an intro and an outro are silence by design - and
+# at a level music never sits at, so a quiet passage is not mistaken for a
+# hole. What this finds is a track a player goes quiet in the middle of; a
+# track with audio *missing* never gets here, because that shows up as length
+# first (`_short_of`).
+GAP_NOISE = "-70dB"
+GAP_SECONDS = 0.08
+GAP_EDGE = 2.0
+# Both answers from one play: the length and the quiet cost the same decode.
+PLAY_FILTER = f"astats,silencedetect=noise={GAP_NOISE}:d={GAP_SECONDS}"
+
+# What is said when a file could not be measured at all (`_say_check`): the
+# check did not happen, and that is worth more than knowing nothing. A note,
+# not a skip - nothing is refused and nothing is missing, so `pending` never
+# hears about it.
+UNMEASURED = "length could not be measured here"
 
 # Format key -> audio quality passed to FFmpegExtractAudio. `None` leaves the
 # codec defaults alone, which is what the lossless and PCM targets want.
@@ -185,7 +245,9 @@ class Track:
 class Progress:
     """Snapshot of an in-flight download, handed to the UI from a worker thread."""
 
-    stage: Literal["matching", "downloading", "converting", "tagging", "skipped"]
+    stage: Literal[
+        "matching", "downloading", "converting", "tagging", "skipped", "attention"
+    ]
     percent: float | None
     downloaded_bytes: int
     total_bytes: int | None
@@ -200,11 +262,15 @@ class Progress:
     note: str = ""
 
 
+@lru_cache(maxsize=None)
 def find_ffmpeg() -> str | None:
     """Return an ffmpeg binary, or None when this machine has none.
 
     The system one wins, then a copy shipped next to the app, then the static
-    binary inside imageio-ffmpeg.
+    binary inside imageio-ffmpeg. Remembered after the first look: it costs
+    three searches to find, it is asked for once for every file the app
+    measures and once for every yt-dlp call it makes, and the answer cannot
+    change while the app is running.
     """
     system_ffmpeg = shutil.which("ffmpeg")
     if system_ffmpeg:
@@ -403,26 +469,42 @@ def download(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     ydl_opts = _download_opts(target_format, outtmpl, progress_callback, extra, ffmpeg)
+    log: _YtDlpLog = ydl_opts["logger"]
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.add_post_processor(_TagFixupPP(), when="pre_process")
             info = ydl.extract_info(target, download=True)
-    except YtDlpDownloadError as err:
-        raise DownloadError(_clean_message(err)) from err
-
-    if ffmpeg is None:
-        _convert_downloads(info, target_format, album)
+        if ffmpeg is None:
+            _convert_downloads(info, target_format, album)
+    except (YtDlpDownloadError, OSError) as err:
+        # The second one is the file system (a file another program holds, a
+        # converter that will not start); either way this download failed and
+        # the UI is shown one reason for it, not a traceback.
+        raise DownloadError(_told(log, _clean_message(err))) from err
 
     tracks: list[Track] = []
+    rejected = ""
     for entry in _entries(info):
         track = _track_of(entry, target_format)
         if track is None:
             continue
+        # A file is only a track if it plays for as long as the upload it came
+        # from says it does: what is short goes, is said out loud, and the retry
+        # list picks it up like any other track left out (`_reject`).
+        expected = entry.get("duration")
+        playing = _playing(track.path)
+        problem = _short_of(playing, expected, _produce_tolerance(expected))
+        if problem is not None:
+            rejected = _told(log, problem)
+            _forget(track.path)
+            _reject(progress_callback, entry, rejected)
+            continue
+        _say_check(progress_callback, playing, entry.get("title"))
         _enrich(entry, track, album, progress_callback)
         tracks.append(track)
     if not tracks:
-        raise DownloadError(f'No audio file was produced for "{target}".')
+        raise DownloadError(rejected or f'No audio file was produced for "{target}".')
     return tracks
 
 
@@ -441,8 +523,10 @@ def _download_spotify(
     and one that cannot be matched or downloaded is left out instead of failing
     the rest: the UI is told which ones and why (`_report_skip`), because a
     playlist that came out short has to account for it. A track whose file is
-    already in the folder is left alone - no lookup, no download - so a playlist
-    that was cut short can simply be run again.
+    already in the folder and plays for as long as the playlist says the track
+    lasts is left alone - no lookup, no download - so a playlist that was cut
+    short can simply be run again; one that is there but comes up short is
+    fetched again rather than trusted (`_short_of`).
     """
     _require_converter(target_format)
     ffmpeg = find_ffmpeg()
@@ -454,11 +538,46 @@ def _download_spotify(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     total = len(playlist.tracks)
+    # What is already in the folder is measured before anything else is
+    # decided: one file played through each, and a folder can hold a hundred
+    # of them, so the plays happen together - they are independent of each
+    # other, while the decisions below are not, and those stay in playlist
+    # order, which is the order the UI and `pending` are shown them in. What is
+    # there has to be the whole track, not merely a file under the right name:
+    # a run killed inside the converter once left one, and taking it for
+    # finished keeps it forever, so its length is measured rather than
+    # believed, at the allowance `EXISTING_TOLERANCE` sets out.
+    present: list[tuple[int, spotify.Track, Path]] = []
+    for index, entry in enumerate(playlist.tracks, start=1):
+        destination = _destination(out_dir, index, entry.title, numbered, target_format)
+        if destination.is_file():
+            present.append((index, entry, destination))
+    checked: dict[int, _Playing] = {}
+    if present:
+        with ThreadPoolExecutor(max_workers=min(VERIFY_WORKERS, len(present))) as pool:
+            plays = pool.map(lambda item: _playing(item[2]), present)
+            for (index, _entry, _path), playing in zip(present, plays):
+                checked[index] = playing
+
     pending: list[tuple[int, spotify.Track]] = []
     for index, entry in enumerate(playlist.tracks, start=1):
-        if _destination(out_dir, index, entry.title, numbered, target_format).is_file():
-            _report_skip(progress_callback, entry, index, total, ALREADY_THERE)
-            continue
+        destination = _destination(out_dir, index, entry.title, numbered, target_format)
+        if destination.is_file():
+            playing = checked.get(index)
+            if playing is None:  # a file that turned up while the scan ran
+                playing = _playing(destination)
+            problem = _short_of(playing, entry.duration, EXISTING_TOLERANCE)
+            if problem is None:
+                _report_skip(progress_callback, entry, index, total, ALREADY_THERE)
+                _say_check(progress_callback, playing, entry.title)
+                continue
+            if not _forget(destination):
+                # Something has the file open, so it cannot be replaced either:
+                # fetching it now would only fail on the same file. Say what is
+                # wrong with it instead, which the retry list keeps, and come
+                # back when whatever is holding it has let go.
+                _report_skip(progress_callback, entry, index, total, problem)
+                continue
         pending.append((index, entry))
 
     urls, reasons = (
@@ -481,9 +600,15 @@ def _download_spotify(
         )
         try:
             info = _extract(url, opts, ffmpeg, target_format, album, index, total)
-        except YtDlpDownloadError as err:
-            failure = f'"{entry.title}": {_clean_message(err)}'
-            _report_skip(progress_callback, entry, index, total, _clean_message(err))
+        except (YtDlpDownloadError, OSError) as err:
+            # The second one is the file system: a track whose file another
+            # program is holding, a converter that will not start. One track
+            # failing on any of that is still one track, not the playlist -
+            # which is what this loop is for - so it is left out and said,
+            # never raised at the run.
+            message = _told(opts["logger"], _clean_message(err))
+            failure = f'"{entry.title}": {message}'
+            _report_skip(progress_callback, entry, index, total, message)
             _discard(out_dir, index, entry.title, numbered)
             continue
         track = _track_of(info, target_format)
@@ -492,6 +617,24 @@ def _download_spotify(
                 progress_callback, entry, index, total, "no audio file was produced"
             )
             continue
+        # The upload's own length is what a file from it is measured against -
+        # it is the same source, so only the rounding of its duration is
+        # allowance. Only when the upload did not say, is Spotify's length used
+        # instead, and then with the disagreement the two catalogues are given.
+        own = info.get("duration")
+        playing = _playing(track.path)
+        problem = _short_of(
+            playing,
+            own or entry.duration,
+            _produce_tolerance(own) if own else metadata.DURATION_TOLERANCE,
+        )
+        if problem is not None:
+            problem = _told(opts["logger"], problem)
+            _forget(track.path)
+            _report_skip(progress_callback, entry, index, total, problem)
+            failure = f'"{entry.title}": {problem}'
+            continue
+        _say_check(progress_callback, playing, entry.title)
         _enrich(info, track, album, callback)
         tracks.append(track)
 
@@ -640,6 +783,90 @@ def _report_skip(
             note=note,
         )
     )
+
+
+def _reject(
+    progress_callback: Callable[[Progress], None] | None,
+    entry: dict,
+    note: str,
+) -> None:
+    """Tell the UI about a file that was produced but is not the whole track.
+
+    The same stage a playlist uses for a track it could not match, so a run's
+    summary counts it the same way - and when the entry carries its position in
+    a playlist, `pending` remembers it like any other track left out, which is
+    what turns a file that would have played with holes in it into a fetch on
+    the next run.
+    """
+    if progress_callback is None:
+        return
+    progress_callback(
+        Progress(
+            stage="skipped",
+            percent=None,
+            downloaded_bytes=0,
+            total_bytes=None,
+            speed=None,
+            eta=None,
+            title=entry.get("title"),
+            track_index=entry.get("playlist_index"),
+            track_count=entry.get("playlist_count"),
+            note=note,
+        )
+    )
+
+
+def _attention(
+    progress_callback: Callable[[Progress], None] | None,
+    note: str,
+    title: str | None = None,
+) -> None:
+    """Tell the UI something worth saying about a file that is being kept.
+
+    Neither a failure nor a skip: nothing was refused and nothing is missing,
+    so `pending` never hears about it. It is the only channel a kept track has
+    to say "this one is on disk, but look at it".
+    """
+    if progress_callback is None:
+        return
+    progress_callback(
+        Progress(
+            stage="attention",
+            percent=None,
+            downloaded_bytes=0,
+            total_bytes=None,
+            speed=None,
+            eta=None,
+            title=title,
+            note=note,
+        )
+    )
+
+
+def _say_check(
+    progress_callback: Callable[[Progress], None] | None,
+    playing: _Playing,
+    title: str | None,
+) -> None:
+    """Say what playing a file showed, when any of it is worth saying.
+
+    The two things a length never says: that nothing could measure it - no
+    decoder on this machine, or one that will not read the file, so the check
+    was skipped rather than passed - and that silence sits inside the audio,
+    where a player would go quiet while the file holds every second it ever
+    had. Neither changes what happens to the track: it stays.
+    """
+    if playing.seconds is None:
+        _attention(progress_callback, UNMEASURED, title)
+    elif playing.gaps:
+        _attention(progress_callback, _gap_note(playing.gaps), title)
+
+
+def _gap_note(gaps: tuple[tuple[float, float], ...]) -> str:
+    """How much of a track is quiet in the middle of it, as the UI shows it."""
+    total = sum(end - start for start, end in gaps)
+    what = "gap" if len(gaps) == 1 else "gaps"
+    return f"{len(gaps)} silent {what} inside the audio ({total:.2f}s)"
 
 
 def _lookup_reason(error: Exception) -> str:
@@ -794,17 +1021,194 @@ def _destination(
     return out_dir / f"{_stem(index, title, numbered)}{transcode.extension(target_format)}"
 
 
+class _Playing(NamedTuple):
+    """What playing a file once told us.
+
+    `seconds` is how long it plays and `gaps` the silences found inside the
+    audio, measured in that one play. `seconds` is None when nothing here
+    could say - a machine with no decoder, or one that would not answer.
+    """
+
+    seconds: float | None
+    gaps: tuple[tuple[float, float], ...] = ()
+
+
+def _playing(path: Path) -> _Playing:
+    """Play `path` all the way through and report what that says.
+
+    A container writes its length once, into the header it writes first, and
+    keeps claiming it after the audio behind it is gone: a FLAC or an MP4 cut
+    in half still says it is every second of a track (measured - which is why
+    reading the tag would prove nothing). Playing the file is what a player
+    does and what a truncated one cannot do for as long, so that is what
+    counts here - and it is done once per file: whatever else that play shows
+    (`_Playing.gaps`) comes with the length instead of costing a second play.
+    """
+    ffmpeg = find_ffmpeg()
+    if ffmpeg is not None:
+        return _decoded(ffmpeg, path)
+    # PyAV has the length but not the quiet: it is a decoder, and measuring
+    # where a track goes silent needs more than decoding it offers. What this
+    # machine cannot check stays unchecked rather than guessed at - which is
+    # what `_say_check` then says.
+    return _Playing(_pyav_length(path))
+
+
+def _play_length(path: Path) -> float | None:
+    """The seconds `_playing` measured, for a caller that wants nothing else."""
+    return _playing(path).seconds
+
+
+def _decoded(ffmpeg: str, path: Path) -> _Playing:
+    """What ffmpeg says about `path`: how long it plays and where it goes quiet.
+
+    Both answers come out of one play - the length `astats` counts to the end
+    and the silences `silencedetect` marks on the way - because a second play
+    would cost as much as the whole check does.
+    """
+    try:
+        process = subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-nostats", "-v", "info", "-i", str(path),
+                "-af", PLAY_FILTER, "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DECODE_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return _Playing(None)  # no decoder to ask, or it never finished
+    said = (process.stdout or "") + (process.stderr or "")
+    rates, counts = _AUDIO_RATE.findall(said), _AUDIO_SAMPLES.findall(said)
+    if not (rates and counts):
+        # ffmpeg ran and got no audio out of the file at all: nothing of it
+        # plays. A run that ended cleanly without a count says nothing.
+        return _Playing(0.0 if process.returncode else None)
+    seconds = int(counts[-1]) / int(rates[0])
+    return _Playing(seconds, _silences(said, seconds))
+
+
+def _silences(said: str, seconds: float) -> tuple[tuple[float, float], ...]:
+    """The gaps `silencedetect` marked inside the audio, edges left out.
+
+    Read as they come: a silence with no end printed never had one - it runs
+    to the end of the file, which is an outro - and one whose start was not
+    printed began before the file did. Only what starts and ends between the
+    two edges says anything about the middle of a track.
+    """
+    gaps: list[tuple[float, float]] = []
+    began: float | None = None
+    for what, value in _SILENCE.findall(said):
+        if what == "start":
+            began = float(value)
+        elif began is not None:
+            ended = float(value)
+            if GAP_EDGE <= began and ended <= seconds - GAP_EDGE:
+                gaps.append((began, ended))
+            began = None
+    return tuple(gaps)
+
+
+def _pyav_length(path: Path) -> float | None:
+    """What PyAV plays of `path` - the decoder a machine without ffmpeg has.
+
+    Any refusal to read is answered with "nothing can be said": on the machine
+    that reaches this branch a decoder that objects is more likely a build
+    missing a codec than a damaged file, and a file wrongly thrown away is a
+    worse answer than one left alone.
+    """
+    try:
+        import av
+    except ImportError:
+        return None
+    try:
+        with av.open(str(path)) as incoming:
+            stream = incoming.streams.audio[0]
+            rate = stream.codec_context.rate
+            samples = sum(frame.samples for frame in incoming.decode(stream))
+    except Exception:  # noqa: BLE001 - whatever a decoder will not describe
+        return None
+    return samples / rate if rate else None
+
+
+def _produce_tolerance(expected: float | None) -> float:
+    """How much shorter than `expected` a produced file may be and still be whole.
+
+    Two percent of the track, between the floor a length counted in whole
+    seconds needs and the cap a long one is held to: the band a twenty-second
+    intro is checked with is a second, a seven-minute track gets the full two -
+    one number either way would be far too much of the short one and none of
+    what the long one actually needs. Any length that cannot be read is checked
+    at the cap, which is the looser of the two.
+    """
+    try:
+        want = float(expected)
+    except (TypeError, ValueError):
+        return SHORT_TOLERANCE
+    return min(SHORT_TOLERANCE, max(MIN_SHORT_TOLERANCE, want * SHORT_TOLERANCE_SHARE))
+
+
+def _short_of(playing: _Playing, expected: float | None, tolerance: float) -> str | None:
+    """Why what `playing` measured is not the whole of the track, when it is not.
+
+    Only a file that comes out *short* counts as wrong. Everything a download
+    can lose - a fragment skipped, an extraction cut off, a run killed inside
+    the converter - takes seconds away from the track, while a file longer than
+    its source only means the two disagree about where the recording ends, and
+    fetching it again would not change that. `expected` is the length the source
+    itself stated, so `tolerance` is what that statement is worth: the band
+    `_produce_tolerance` draws around a file measured against the upload it came
+    from, and `EXISTING_TOLERANCE` for one measured against Spotify, which also
+    carries what the matcher accepted it for.
+
+    None when the file plays as long as it should - or when nothing here can
+    play it, because a doubt must not delete a track that may be fine. What
+    `playing` says is taken rather than measured again: a caller that also
+    wants `_Playing.gaps` must have played the file once already.
+    """
+    try:
+        want = float(expected)
+    except (TypeError, ValueError):
+        return None
+    if not want:
+        return None
+    actual = playing.seconds
+    if actual is None or actual >= want - tolerance:
+        return None
+    return f"{INCOMPLETE} ({actual:.1f}s of {want:.1f}s)"
+
+
 def _discard(out_dir: Path, index: int, title: str, numbered: bool) -> None:
     """Remove what a track that failed left behind: its thumbnail, its part file.
 
     yt-dlp writes the picture before the audio, so a download that ends in an
     error leaves a cover for a file that does not exist - which is litter in a
-    folder the user is meant to read as their music.
+    folder the user is meant to read as their music. Tidying up is never worth
+    the original failure being replaced by a complaint about a locked file
+    (`_forget`), so a leftover that will not go is left where it is.
     """
     prefix = f"{_stem(index, title, numbered)}."
     for leftover in out_dir.iterdir():
         if leftover.name.startswith(prefix):
-            leftover.unlink(missing_ok=True)
+            _forget(leftover)
+
+
+def _forget(path: Path) -> bool:
+    """Delete `path`; False when it will not go.
+
+    Windows refuses to remove a file another program has open - a player with
+    the track in it, an indexer, an antivirus mid-scan - and that refusal must
+    not end the run over it: what the caller does next still has to happen, and
+    the caller that was about to fetch the track again needs to know the old
+    file is still standing there, because writing over it will not work either.
+    """
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
 
 
 def _numbered(
@@ -938,12 +1342,25 @@ def _convert_downloads(info: dict, target_format: str, album: AlbumInfo | None) 
         if not source.is_file():
             continue
         destination = source.with_suffix(transcode.extension(target_format))
-        transcode.convert(source, target_format, destination)
+        # Nothing is written under the track's own name until the track is
+        # finished: the conversion and the tags both land on a `.part` file that
+        # is moved into place in one step at the end. A run cut off in the middle
+        # - and Android cuts processes off for less than a full battery - leaves
+        # something no folder would offer to play and no second run would take
+        # for a finished track, instead of a file that looks done and is not.
+        staging = destination.with_name(destination.name + ".part")
+        try:
+            transcode.convert(source, target_format, staging)
+            thumbnail = _thumbnail_of(source)
+            cover = transcode.cover_from(thumbnail) if thumbnail is not None else None
+            written = metadata.write_tags(staging, _video_tags(entry, album), cover)
+            staging.replace(destination)
+        except BaseException:
+            staging.unlink(missing_ok=True)  # never half a track under a name
+            raise
         if destination != source:
             source.unlink(missing_ok=True)
-        thumbnail = _thumbnail_of(source)
-        cover = transcode.cover_from(thumbnail) if thumbnail is not None else None
-        if metadata.write_tags(destination, _video_tags(entry, album), cover) and cover:
+        if written and cover and thumbnail is not None:
             thumbnail.unlink(missing_ok=True)
         downloads[0]["filepath"] = str(destination)
         entry["filepath"] = str(destination)
@@ -983,10 +1400,62 @@ def _release_date(entry: dict) -> str | None:
     return None
 
 
+class _YtDlpLog:
+    """Where yt-dlp's messages go, now that the app no longer silences them.
+
+    `no_warnings` used to throw away everything YouTube had to say about a
+    download, which is how a track that lost something could still come back
+    looking like a success: the complaint existed and nobody ever saw it.
+    Chatter stays out of the console (`debug` drops it, which is what `quiet`
+    asked for), but warnings and errors are kept - the last few of them, because
+    they are what explains a failure, and `_told` puts them next to it.
+    """
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def debug(self, message: str) -> None:  # noqa: ARG002 - deliberately dropped
+        pass
+
+    def info(self, message: str) -> None:  # noqa: ARG002 - deliberately dropped
+        pass
+
+    def warning(self, message: str) -> None:
+        self._keep(message)
+
+    def error(self, message: str) -> None:
+        self._keep(message)
+
+    def _keep(self, message: str) -> None:
+        self.warnings.append(str(message).strip())
+        del self.warnings[:-KEPT_WARNINGS]
+
+
+def _told(log: _YtDlpLog | None, message: str) -> str:
+    """`message`, with what yt-dlp only warned about when that is all there is.
+
+    A warning by definition does not stop a download, so without this the one
+    that explains why a track came out wrong is shown to nobody - and the next
+    run warns into the void again. One warning, the last, so the reason stays
+    readable in the skip list and in `pending.json`.
+    """
+    if log is None or not log.warnings:
+        return message
+    return f"{message} [{log.warnings[-1]}]" if message else log.warnings[-1]
+
+
 def _base_opts() -> dict:
     return {
         "quiet": True,
-        "no_warnings": True,
+        # Warnings are kept rather than silenced - see `_YtDlpLog`, which is
+        # also what `quiet` routes the rest of yt-dlp's chatter into.
+        "logger": _YtDlpLog(),
+        # yt-dlp's own default is to skip a fragment it cannot fetch and hand
+        # back the rest as though nothing were missing (`skip_unavailable_fragments`).
+        # A fragment skipped is a piece of the song gone - it plays as a cut
+        # through the whole track - so a fragment that will not come is an
+        # error here: the track is reported, not silently delivered short.
+        "skip_unavailable_fragments": False,
         "noprogress": True,
         "ffmpeg_location": find_ffmpeg(),
         "js_runtimes": find_js_runtimes(),
