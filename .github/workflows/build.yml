@@ -166,7 +166,11 @@ jobs:
 
       # Flutter, the JDK and the Android SDK are ~2 GB and change only when
       # pyproject.toml does: the target SDK and the app's Android dependencies
-      # both live there.
+      # both live there. `restore-keys` keeps that true when an edit to
+      # pyproject.toml does not concern them at all - a test section, a comment -
+      # so the previous toolchain is the one to start from and only a real change
+      # to it costs the download: a cold toolchain turns every run into the first
+      # one this build has ever had.
       - uses: actions/cache@v4
         with:
           path: |
@@ -174,6 +178,8 @@ jobs:
             ~/java
             ~/Android/sdk
           key: flet-toolchain-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            flet-toolchain-${{ runner.os }}-
 
       - name: Install Flet
         run: |
@@ -188,12 +194,30 @@ jobs:
       # package: the three sets of native libraries (Flutter's, Python's, and
       # ffmpeg's) are what the fat APK is made of, so a phone downloads the ~110
       # MB that fit it instead of 230 MB of which two thirds never run.
+      #
+      # The one step that has failed by itself, with nothing the code did wrong:
+      # serious_python fetches Python through gradle-download-task, which caches
+      # its ETags in `build/download-task/etags.json` - written in place rather
+      # than moved into place, and read back by the download that follows. A file
+      # caught between the two reads as "Unable to determine the current
+      # character ... index number 255" and every download after it fails, while
+      # the archive that file guards answers 200 the whole time. It holds nothing
+      # but a validator, so the repair is to throw it out and ask once more.
       - name: Build APKs
         run: |
           python version.py --stamp "${{ needs.version.outputs.version }}"
-          flet build apk --yes --split-per-abi \
-            --build-version "${{ needs.version.outputs.version }}" \
-            --build-number "${{ needs.version.outputs.build }}"
+
+          build() {
+            flet build apk --yes --split-per-abi \
+              --build-version "${{ needs.version.outputs.version }}" \
+              --build-number "${{ needs.version.outputs.build }}"
+          }
+
+          if ! build; then
+            echo "::warning::the build failed; clearing the ETag cache and going again"
+            find build -name etags.json -delete 2>/dev/null || true
+            build
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
