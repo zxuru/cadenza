@@ -42,6 +42,17 @@ Security** the first time. On Linux, `chmod +x` if the archive was unpacked by
 something that dropped the executable bit. On Android the APK is signed with a
 debug key, so the system warns about an unknown developer.
 
+**Windows 11 with Smart App Control on** is the case that does not warn but
+stops: the app dies with a dialog about a DLL inside `~/.flet/client` (usually
+`rive_native.dll`), and no amount of "Run anyway" gets past it. That file is the
+Flet client's own — unsigned, and unknown to the cloud that judges it — so
+signing this app's executable would not help: the file being refused is Flet's,
+not Cadenza's. The way through is **Windows Security → App & browser control →
+Smart App Control → Off**, with two things worth knowing before you do: Windows
+lets you turn it *off* but not back *on* without a reset, and nothing else needs
+doing afterwards — the files on disk are intact, so the app starts on the next
+try. SmartScreen, the warning above, is a different and gentler check.
+
 The first launch asks where your music goes, and shows the folder in the header
 afterwards — "Change folder" moves it. Downloads are one folder per album.
 
