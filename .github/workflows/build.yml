@@ -64,12 +64,6 @@ jobs:
     name: desktop (${{ matrix.name }})
     needs: version
     runs-on: ${{ matrix.os }}
-    # SignPath signs a Windows build when the repository has been given an API
-    # token for it (free for open-source projects - see BUILD.md). Absent, the
-    # build goes out unsigned and the step below says so in the log, rather than
-    # the job failing over a secret nobody has set up yet.
-    env:
-      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -134,51 +128,6 @@ jobs:
             echo "::error::the build does not report version $VERSION"
             exit 1
           fi
-
-      # The signature SmartScreen asks for. SignPath signs open-source projects
-      # for free (see BUILD.md): the executable is uploaded as an artifact,
-      # SignPath signs it, and the signed copy is put back in its place before
-      # anything is packed - so what is shipped is what was signed. Without the
-      # token these are skipped and the last one says so: an unsigned build is
-      # still a build, just one Windows asks about first.
-      - name: Upload the executable to be signed
-        id: unsigned
-        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-x86_64-unsigned
-          path: dist/Cadenza.exe
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Sign it with SignPath
-        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
-        uses: signpath/github-action-submit-signing-request@v1
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ secrets.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ secrets.SIGNPATH_SIGNING_POLICY_SLUG }}
-          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
-          output-artifact-directory: signed
-          wait-for-completion: true
-
-      - name: Put the signed executable in place
-        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN != ''
-        shell: pwsh
-        run: |
-          Copy-Item signed/Cadenza.exe dist/Cadenza.exe -Force
-          $signature = Get-AuthenticodeSignature dist/Cadenza.exe
-          if ($signature.Status -ne "Valid") {
-            throw "the signature does not verify: $($signature.Status)"
-          }
-          $signature.SignerCertificate.Subject
-
-      - name: Say the build is unsigned
-        if: runner.os == 'Windows' && env.SIGNPATH_API_TOKEN == ''
-        shell: bash
-        run: |
-          echo "::warning::no SIGNPATH_API_TOKEN secret: this Windows build is unsigned"
 
       # A tarball keeps the executable bit; `ditto` keeps the permissions and
       # symlinks an .app bundle is made of. The release file is named for what

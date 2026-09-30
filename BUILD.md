@@ -259,30 +259,6 @@ Windows on ARM is the one architecture left out: `imageio-ffmpeg`, which
 supplies the bundled ffmpeg, publishes no `win_arm64` wheel, so the x64 build
 is the one to hand out there — Windows runs it through its own emulation.
 
-### Signing the Windows build
-
-SmartScreen asks about an executable it cannot attribute to a publisher, and a
-signature is what gives it one. SignPath signs open-source projects for free,
-with their own certificate, so this costs nothing and no key is kept here:
-
-1. sign up at [signpath.io](https://signpath.io) with the GitHub account that
-   owns this repository;
-2. create an organization and a project pointing at `zxuru/cadenza`;
-3. in the project, create an **API token** and a **signing policy** (a policy
-   named `sign-release` will do; the default artifact configuration signs
-   `.exe` files, which is the one thing that needs signing);
-4. add four secrets under **Settings → Secrets and variables → Actions**:
-   `SIGNPATH_API_TOKEN`, `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`
-   and `SIGNPATH_SIGNING_POLICY_SLUG`.
-
-What the workflow then does, only on Windows and only while the token exists:
-upload `dist/Cadenza.exe` as an artifact, submit it for signing, put the signed
-copy back in its place, and check with `Get-AuthenticodeSignature` that the
-result actually verifies - a signature that does not is a failed build, not a
-quiet downgrade. The executable is signed *before* it is packed, so what ships
-is what was signed. Until the four secrets are there the steps are skipped and
-the log carries one warning; the build is unsigned but intact.
-
 It runs on a push to `main`, on a tag, and on demand (**Actions → build → Run
 workflow**). The `version` job decides the number:
 
