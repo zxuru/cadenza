@@ -221,7 +221,10 @@ release      none newer
 ```
 
 It downloads nothing; a release line other than `none newer` is what the
-button would then install. Like the self-test it falls back to a file
+button would then install. The `asset` line is the platform part of the name —
+the file on the release itself is `Cadenza-<version>-linux-x86_64.tar.gz` (see
+[Automatic builds and releases](#automatic-builds-and-releases)). Like the
+self-test it falls back to a file
 (`updatecheck.txt`) when the build has no console, and it exits non-zero only
 when the feed could not be read.
 
@@ -238,19 +241,47 @@ release step to run by hand:
 
 | Job | Runner | Release asset |
 | --- | --- | --- |
-| desktop (linux-x86_64) | `ubuntu-latest` | `linux-x86_64.tar.gz` |
-| desktop (linux-arm64) | `ubuntu-24.04-arm` | `linux-arm64.tar.gz` |
-| desktop (windows-x86_64) | `windows-latest` | `windows-x86_64.exe` |
-| desktop (macos-arm64) | `macos-latest` | `macos-arm64.zip` |
-| desktop (macos-x86_64) | `macos-15-intel` | `macos-x86_64.zip` |
-| android | `ubuntu-latest` | `cadenza-arm64-v8a.apk`, `cadenza-armeabi-v7a.apk`, `cadenza-x86_64.apk` |
+| desktop (linux-x86_64) | `ubuntu-latest` | `Cadenza-<version>-linux-x86_64.tar.gz` |
+| desktop (linux-arm64) | `ubuntu-24.04-arm` | `Cadenza-<version>-linux-arm64.tar.gz` |
+| desktop (windows-x86_64) | `windows-latest` | `Cadenza-<version>-windows-x86_64.exe` |
+| desktop (macos-arm64) | `macos-latest` | `Cadenza-<version>-macos-arm64.zip` |
+| desktop (macos-x86_64) | `macos-15-intel` | `Cadenza-<version>-macos-x86_64.zip` |
+| android | `ubuntu-latest` | `cadenza-<version>-arm64-v8a.apk`, `cadenza-<version>-armeabi-v7a.apk`, `cadenza-<version>-x86_64.apk` |
 
-The names are what `update.py` looks for, so the same table is written down
-there; a file renamed on one side stops the app from finding it.
+The version is in the name, so a file sitting in a Downloads folder says which
+app and which build it is. What `update.py` looks for is the part *after* the
+version - `windows-x86_64.exe`, `arm64-v8a.apk` - which is also what releases
+published before the version went in are named, so one updater reads both. The
+same table is written down there; a file renamed on one side stops the app from
+finding it.
 
 Windows on ARM is the one architecture left out: `imageio-ffmpeg`, which
 supplies the bundled ffmpeg, publishes no `win_arm64` wheel, so the x64 build
 is the one to hand out there — Windows runs it through its own emulation.
+
+### Signing the Windows build
+
+SmartScreen asks about an executable it cannot attribute to a publisher, and a
+signature is what gives it one. SignPath signs open-source projects for free,
+with their own certificate, so this costs nothing and no key is kept here:
+
+1. sign up at [signpath.io](https://signpath.io) with the GitHub account that
+   owns this repository;
+2. create an organization and a project pointing at `zxuru/cadenza`;
+3. in the project, create an **API token** and a **signing policy** (a policy
+   named `sign-release` will do; the default artifact configuration signs
+   `.exe` files, which is the one thing that needs signing);
+4. add four secrets under **Settings → Secrets and variables → Actions**:
+   `SIGNPATH_API_TOKEN`, `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`
+   and `SIGNPATH_SIGNING_POLICY_SLUG`.
+
+What the workflow then does, only on Windows and only while the token exists:
+upload `dist/Cadenza.exe` as an artifact, submit it for signing, put the signed
+copy back in its place, and check with `Get-AuthenticodeSignature` that the
+result actually verifies - a signature that does not is a failed build, not a
+quiet downgrade. The executable is signed *before* it is packed, so what ships
+is what was signed. Until the four secrets are there the steps are skipped and
+the log carries one warning; the build is unsigned but intact.
 
 It runs on a push to `main`, on a tag, and on demand (**Actions → build → Run
 workflow**). The `version` job decides the number:

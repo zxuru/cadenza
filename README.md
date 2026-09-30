@@ -16,10 +16,13 @@ release](https://github.com/zxuru/cadenza/releases/latest):
 
 | Platform | File | Then |
 | --- | --- | --- |
-| Linux x86_64 / arm64 | `linux-<arch>.tar.gz` | `tar -xzf`, then run `./Cadenza` |
-| Windows x64 | `windows-x86_64.exe` | Run it (Windows on ARM: this build, emulated) |
-| macOS arm64 / x86_64 | `macos-<arch>.zip` | Unzip, drop `Cadenza.app` wherever you keep apps |
-| Android 7+ | `cadenza-arm64-v8a.apk` (or `cadenza-armeabi-v7a.apk` on an old 32-bit phone, `cadenza-x86_64.apk` on an emulator) | Copy it to the phone and open it |
+| Linux x86_64 / arm64 | `Cadenza-<version>-linux-<arch>.tar.gz` | `tar -xzf`, then run `./Cadenza` |
+| Windows x64 | `Cadenza-<version>-windows-x86_64.exe` | Run it (Windows on ARM: this build, emulated) |
+| macOS arm64 / x86_64 | `Cadenza-<version>-macos-<arch>.zip` | Unzip, drop `Cadenza.app` wherever you keep apps |
+| Android 7+ | `cadenza-<version>-arm64-v8a.apk` (or `…-armeabi-v7a.apk` on an old 32-bit phone, `…-x86_64.apk` on an emulator) | Copy it to the phone and open it |
+
+The file says which app and which version it holds, so a folder of downloads
+still tells them apart.
 
 | Platform | Requirement |
 | --- | --- |
@@ -33,11 +36,14 @@ Nothing else is needed: no Python, no ffmpeg, no `PATH` entries, no admin
 rights. The first launch takes a few extra seconds, when the Flet client is
 unpacked into `~/.flet/client/`; later launches reuse it.
 
-The binaries are not signed or notarized, so Windows SmartScreen warns once
-("More info" → "Run anyway") and macOS asks you to allow the app in **Privacy &
-Security** the first time. On Linux, `chmod +x` if the archive was unpacked by
-something that dropped the executable bit. On Android the APK is signed with a
-debug key, so the system warns about an unknown developer.
+Windows builds are signed once the repository is given a SignPath token (free
+for open-source projects; BUILD.md says how), so SmartScreen has a publisher to
+name — until then the binary is unsigned and SmartScreen warns once ("More
+info" → "Run anyway"). macOS asks you to allow the app in **Privacy &
+Security** the first time: it is not notarized. On Linux, `chmod +x` if the
+archive was unpacked by something that dropped the executable bit. On Android
+the APK is signed with a debug key, so the system warns about an unknown
+developer.
 
 The first launch asks where your music goes, and shows the folder in the header
 afterwards — "Change folder" moves it. Downloads are one folder per album.

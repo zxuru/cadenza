@@ -3,8 +3,11 @@
 A release is published for every push to `main` (see
 `.github/workflows/build.yml`), so the newest release is always the code that
 was pushed last. The feed is GitHub's own `releases/latest`, and the artifact is
-the one built for this platform, named as the workflow names it
-(`linux-x86_64.tar.gz`, `windows-x86_64.exe`, `macos-arm64.zip`).
+the one built for this platform, named as the workflow names it:
+`Cadenza-<version>-<platform>.<ext>` - `Cadenza-1.0.16-windows-x86_64.exe`,
+`cadenza-1.0.16-arm64-v8a.apk` - found by its platform part, which is also what
+a release named before the version went into its files answers to
+(`windows-x86_64.exe`, `cadenza-arm64-v8a.apk`).
 
 Nothing here runs on its own: `main.py` calls it when the user asks for it, and
 installs only what that check found.
@@ -55,7 +58,10 @@ TOKEN_ENV = "CADENZA_UPDATE_TOKEN"
 TIMEOUT = 15
 CHUNK = 256 * 1024
 
-# Release asset per (platform, architecture), as the workflow names them.
+# The platform part of the file a release carries for (platform, architecture),
+# as the workflow writes it into `Cadenza-<version>-<platform>.<ext>`: this part
+# is what is looked up, so the plainer names releases used before the version
+# went into them are found by the same call (see `Release.asset`).
 ASSETS = {
     ("linux", "x86_64"): "linux-x86_64.tar.gz",
     ("linux", "arm64"): "linux-arm64.tar.gz",
@@ -65,13 +71,16 @@ ASSETS = {
 }
 # Android ships one APK per ABI (`flet build apk --split-per-abi`), named after
 # the ABI; the fat package carrying all three is what `--split-per-abi` exists
-# to avoid, since two thirds of it never runs on any given phone.
+# to avoid, since two thirds of it never runs on any given phone. The ABI is
+# what is looked up here, because that is the part both namings end in:
+# `cadenza-<version>-arm64-v8a.apk` and `cadenza-arm64-v8a.apk` both end in
+# `-arm64-v8a.apk`.
 ANDROID_ASSETS = {
-    "aarch64": "cadenza-arm64-v8a.apk",
-    "arm64": "cadenza-arm64-v8a.apk",
-    "armv7l": "cadenza-armeabi-v7a.apk",
-    "armv8l": "cadenza-armeabi-v7a.apk",
-    "x86_64": "cadenza-x86_64.apk",
+    "aarch64": "arm64-v8a.apk",
+    "arm64": "arm64-v8a.apk",
+    "armv7l": "armeabi-v7a.apk",
+    "armv8l": "armeabi-v7a.apk",
+    "x86_64": "x86_64.apk",
 }
 # `platform.machine()` spells the architecture differently on every OS.
 ARCHITECTURES = {
@@ -113,7 +122,23 @@ class Release:
     assets: dict[str, Asset] = field(default_factory=dict)
 
     def asset(self, name: str) -> Asset | None:
-        return self.assets.get(name)
+        """The release's file for this platform, under either naming it has used.
+
+        Exact first, which is what every release published before the version
+        went into the names answers to; then a file that holds `name` behind a
+        version - `Cadenza-1.0.16-windows-x86_64.exe` ends in
+        `-windows-x86_64.exe`, `cadenza-1.0.16-arm64-v8a.apk` in
+        `-arm64-v8a.apk`. Nothing here knows this build's own version: an
+        updater several releases behind is still shown the newest file.
+        """
+        found = self.assets.get(name)
+        if found is not None:
+            return found
+        suffix = f"-{name}"
+        for candidate in self.assets.values():
+            if candidate.name.endswith(suffix):
+                return candidate
+        return None
 
 
 @dataclass(frozen=True)
