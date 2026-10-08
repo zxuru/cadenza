@@ -245,7 +245,10 @@ jobs:
   release:
     name: release
     needs: [version, desktop, android]
-    if: needs.version.outputs.publish == 'true'
+    # Android is best-effort: the release waits for it (so its APKs ship when
+    # the build is healthy) but only the desktop builds gate it - a failed
+    # APK build must not cancel the release.
+    if: ${{ !cancelled() && needs.version.outputs.publish == 'true' && needs.desktop.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
