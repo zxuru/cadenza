@@ -133,7 +133,7 @@ class BuildError(RuntimeError):
 # Packages that resolve modules at runtime (control classes looked up by name)
 # and therefore need their submodules collected wholesale instead of relying on
 # static import analysis.
-COLLECT_ALL = ("flet", "flet_desktop")
+COLLECT_ALL = ("flet", "flet_audio", "flet_desktop")
 # yt-dlp's extractors are imported by name at runtime too, but its own
 # PyInstaller hook already collects the submodules - and `--collect-all` would
 # additionally copy the package's sources as data, 10 MB of `.py` files that

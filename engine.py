@@ -51,16 +51,20 @@ MATCH_LOOKUPS = 6
 MATCH_WORKERS = 4
 MATCH_STAGGER = 0.4  # seconds between the matching requests
 MATCH_RETRY_PAUSE = 3.0  # seconds between the retries of one pass
-MATCH_RETRY_GIVE_UP = 3  # refusals in a row that end the retry pass
-# Files already in a folder are measured before the folder fetches anything,
-# and one measurement is one file played all the way through: they are
-# independent of each other, so they are played together. Four at a time hides
-# each decode behind the next one without turning a laptop into a fan.
-VERIFY_WORKERS = 4
-# The one failure a retry can fix, and the one it cannot: a lookup YouTube
-# refused says nothing about whether the track exists, a miss does.
 REFUSED = "YouTube refused the request (rate limit or sign-in check)"
 NO_MATCH = "no match on YouTube"
+# A lookup YouTube refused because this address asked too often, in any of the
+# shapes yt-dlp reports it: the request itself went through, what came back is
+# a refusal - 403, "Forbidden", or the sign-in wall - rather than a miss.
+RATE_LIMITED = (
+    "HTTP Error 403",
+    "403",
+    "Forbidden",
+    "Sign in to confirm",
+    "not a bot",
+)
+#: Seconds before a refused run may be asked for again, counted down in the UI.
+RETRY_AFTER = 90
 # Not a failure: the file is already where the download would put it (a run
 # that was cut short and is being finished), so it is not remembered as missing.
 ALREADY_THERE = "already in the folder"
@@ -212,6 +216,8 @@ class SearchResult:
     # Where the candidate came from, when it is not YouTube: `SPOTIFY` for a
     # linked playlist or track, whose audio comes from YouTube on download.
     source: str = ""
+    # 30s sample a music database served for this recording, when one matched.
+    preview: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -869,6 +875,18 @@ def _gap_note(gaps: tuple[tuple[float, float], ...]) -> str:
     return f"{len(gaps)} silent {what} inside the audio ({total:.2f}s)"
 
 
+def is_rate_limited(reason: str) -> bool:
+    """True when `reason` is YouTube refusing the address rather than a miss."""
+    if (reason or "") == REFUSED:
+        return True
+    return any(marker in (reason or "") for marker in RATE_LIMITED)
+
+
+def retry_after(reason: str) -> int | None:
+    """Seconds to wait before asking again, or None when it is not a refusal."""
+    return RETRY_AFTER if is_rate_limited(reason) else None
+
+
 def _lookup_reason(error: Exception) -> str:
     """Why a lookup failed, as the UI will show it.
 
@@ -877,7 +895,7 @@ def _lookup_reason(error: Exception) -> str:
     works again later.
     """
     message = _clean_message(error)
-    if "Sign in to confirm" in message or "not a bot" in message:
+    if is_rate_limited(message):
         return REFUSED
     return message or error.__class__.__name__
 
@@ -1560,6 +1578,18 @@ def _rank(results: list[SearchResult]) -> list[SearchResult]:
     return sorted(results, key=lambda result: not (result.music or result.kind == "album"))
 
 
+def _preview_for(title: str, artist: str | None, duration: float | None) -> str | None:
+    """30s sample for one resolved track, or None when no database knows it.
+
+    Best effort and silent: a database that is down or does not know the track
+    only means its row plays nothing, never a failed search.
+    """
+    try:
+        match = metadata.lookup(title, artist, duration)
+    except Exception:  # noqa: BLE001 - a preview must never break a search
+        return None
+    return match.preview if match is not None else None
+
 def _resolve_entry(entry: dict) -> SearchResult | None:
     """Fill in the metadata the flat search result does not carry."""
     url = str(entry.get("url") or "")
@@ -1580,6 +1610,7 @@ def _resolve_entry(entry: dict) -> SearchResult | None:
             artist=artist,
             track_count=len(entries),
             music=_is_music(info),
+            preview=None,
         )
 
     title = info.get("title") or entry.get("title")
@@ -1593,6 +1624,7 @@ def _resolve_entry(entry: dict) -> SearchResult | None:
         duration=info.get("duration"),
         album=info.get("album"),
         music=_is_music(info),
+        preview=_preview_for(title, _clean_artist(info.get("artist") or info.get("uploader")), info.get("duration")),
     )
 
 

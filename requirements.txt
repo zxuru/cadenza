@@ -3,6 +3,9 @@
 # process, and build.py stages its archive into the executable. `flet_web` is
 # deliberately not asked for - it is only used by the browser view.
 flet[desktop]>=1.0,<2
+# 30s previews in the results list (`flet_audio.Audio`): the import is optional
+# so a checkout without it still runs, but rows then play nothing.
+flet-audio>=1.0,<2
 
 # Engine: extractor fixes land constantly, so leave this unpinned and update often.
 yt-dlp

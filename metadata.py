@@ -64,7 +64,7 @@ class Match:
     track: int | None = None
     disc: int | None = None
     cover: bytes | None = None
-
+    preview: str | None = None  # 30s sample the search results can play
 
 @dataclass(frozen=True, slots=True)
 class _Candidate:
@@ -81,6 +81,7 @@ class _Candidate:
     disc: int | None = None
     cover_url: str | None = None
     album_id: str | None = None  # Deezer only: genres and cover live on the album
+    preview: str | None = None  # 30s sample, when the database serves one
 
 
 def lookup(
@@ -149,10 +150,10 @@ def _find_deezer(title: str, artist: str | None, duration: float | None) -> Matc
         album=_text(album.get("title")) or candidate.album,
         album_artist=_text(_mapping(album.get("artist")).get("name")),
         date=candidate.date or _date(album.get("release_date")),
-        genre=_genre(album) or candidate.genre,
         track=candidate.track,
         disc=candidate.disc,
         cover=_cover(album.get("cover_xl")),
+        preview=candidate.preview,
     )
 
 
@@ -170,6 +171,7 @@ def _find_itunes(title: str, artist: str | None, duration: float | None) -> Matc
         track=candidate.track,
         disc=candidate.disc,
         cover=_cover(candidate.cover_url),
+        preview=candidate.preview,
     )
 
 
@@ -209,6 +211,7 @@ def _deezer_candidate(item: dict) -> _Candidate:
         disc=_position(item.get("disk_number")),
         cover_url=_text(album.get("cover_xl")),
         album_id=_text(album.get("id")),
+        preview=_text(item.get("preview")),
     )
 
 
@@ -225,6 +228,7 @@ def _itunes_candidate(item: dict) -> _Candidate:
         track=_position(item.get("trackNumber")),
         disc=_position(item.get("discNumber")),
         cover_url=artwork.replace("100x100bb", ITUNES_ARTWORK) if artwork else None,
+        preview=_text(item.get("previewUrl")),
     )
 
 

@@ -15,6 +15,11 @@ from pathlib import Path
 import flet as ft
 from flet.utils.platform_utils import is_android, is_mobile
 
+try:
+    import flet_audio as fta
+except ImportError:  # preview player is optional: rows then play nothing
+    fta = None  # type: ignore[assignment]
+
 import bundle
 import engine
 import i18n
@@ -270,6 +275,12 @@ def main(page: ft.Page) -> None:
     # Mobile only: the directory the system gives this app for its files.
     storage_paths = ft.StoragePaths()
     page.services.append(storage_paths)
+    # The 30s sample each track row can play: one player shared by the list.
+    # `src` is required by the control, so it starts muted on a placeholder
+    # that is replaced before the first play.
+    preview_player = fta.Audio(src="https://cdn.pixabay.com/audio/silence.mp3") if fta else None
+    if preview_player is not None:
+        page.services.append(preview_player)
 
     badge_label = ft.Text(
         t("badge_ready"), size=12, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_400
@@ -305,20 +316,35 @@ def main(page: ft.Page) -> None:
         on_select=lambda _: remember_format(),
     )
 
+    clear_btn = ft.IconButton(
+        icon=ft.Icons.CLEAR,
+        icon_size=20,
+        tooltip=t("clear_query"),
+        visible=False,
+        on_click=lambda _: clear_query(),
+    )
     query_field = ft.TextField(
         label=t("query_label"),
         hint_text=t("query_hint"),
         expand=True,
         autofocus=True,
+        suffix=clear_btn,
+        on_change=lambda _: refresh_query_state(),
         on_submit=lambda _: start_search(),
     )
     search_btn = ft.FilledButton(
         content=t("search"),
         icon=ft.Icons.SEARCH,
+        disabled=True,
         on_click=lambda _: start_search(),
     )
 
     results_list = ft.ListView(expand=True, spacing=2, padding=ft.Padding.only(top=8))
+    # Shown while a search or an album read runs: a spinner in the middle of the
+    # list area, which is also where an empty search says it found nothing.
+    busy_spinner = ft.ProgressRing(width=40, height=40, visible=False)
+    busy_label = ft.Text("", size=13, color=ft.Colors.BLUE_200, visible=False)
+    empty_text = ft.Text(t("status_empty"), size=13, color=ft.Colors.GREY_500, visible=False)
     progress_bar = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=3)
     status_text = ft.Text(t("status_start"), size=13, selectable=True)
     # A playlist that came out short has to say so: this is the line that names
@@ -408,6 +434,32 @@ def main(page: ft.Page) -> None:
         for button in row_buttons:
             button.disabled = busy
 
+    def refresh_query_state() -> None:
+        """The X, and whether Buscar can run: only with text, never while busy."""
+        has_text = bool((query_field.value or "").strip())
+        clear_btn.visible = has_text
+        search_btn.disabled = working or not has_text
+        safe_update()
+
+    def clear_query() -> None:
+        query_field.value = ""
+        stop_preview()
+        refresh_query_state()
+        page.focus(query_field)
+
+    def show_busy(message: str) -> None:
+        """Spinner in the middle of the list area, with what is happening."""
+        results_list.controls.clear()
+        empty_text.visible = False
+        busy_label.value = message
+        busy_spinner.visible = True
+        busy_label.visible = True
+        safe_update()
+
+    def hide_busy() -> None:
+        busy_spinner.visible = False
+        busy_label.visible = False
+
     def safe_update() -> None:
         """Push UI changes from background tasks; the session dies if the window closes."""
         try:
@@ -436,13 +488,26 @@ def main(page: ft.Page) -> None:
     def render_results(results: list[SearchResult]) -> None:
         results_list.controls.clear()
         row_buttons.clear()
+        stop_preview()
+        hide_busy()
+        empty_text.visible = not results
         for result in results:
+            actions: list[ft.Control] = []
+            if result.kind == "track" and result.preview and preview_player is not None:
+                play_btn = ft.IconButton(
+                    icon=ft.Icons.PLAY_ARROW,
+                    tooltip=t("tooltip_preview"),
+                    on_click=lambda _, item=result: toggle_preview(item),
+                )
+                play_buttons[result.url] = play_btn
+                actions.append(play_btn)
             button = ft.IconButton(
                 icon=ft.Icons.DOWNLOAD,
                 tooltip=t("tooltip_download_album" if result.kind == "album" else "tooltip_download_track"),
                 on_click=lambda _, item=result: start_download(item),
             )
             row_buttons.append(button)
+            actions.append(button)
             results_list.controls.append(
                 ft.ListTile(
                     leading=ft.Icon(
@@ -451,10 +516,13 @@ def main(page: ft.Page) -> None:
                     ),
                     title=ft.Text(result.title, size=14),
                     subtitle=ft.Text(subtitle_for(result), size=12, color=ft.Colors.GREY_400),
-                    trailing=button,
+                    trailing=ft.Row(actions, spacing=0, tight=True),
                 )
             )
-        render_status(t.plural("status_results", len(results)), ft.Colors.GREY_300)
+        render_status(
+            t.plural("status_results", len(results)) if results else t("status_empty"),
+            ft.Colors.GREY_300,
+        )
 
     def render_progress(progress: Progress, target_format: str, album_title: str | None) -> None:
         parts: list[str] = []
@@ -584,10 +652,68 @@ def main(page: ft.Page) -> None:
             ft.Colors.GREEN_300,
         )
 
+    # Which result row is previewing, and its button: one sample at a time, so
+    # starting one stops the other and the old icon goes back to play.
+    previewing: dict[str, str] = {}
+    play_buttons: dict[str, ft.IconButton] = {}
+
+    def stop_preview() -> None:
+        """Silence the shared player and reset every row icon to play."""
+        if previewing:
+            previewing.clear()
+            if preview_player is not None:
+                page.run_task(_release_preview)
+        for button in play_buttons.values():
+            button.icon = ft.Icons.PLAY_ARROW
+
+    async def _release_preview() -> None:
+        try:
+            await preview_player.pause()  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001 - leaving audio behind is worse
+            pass
+
+    def toggle_preview(result: SearchResult) -> None:
+        if preview_player is None or not result.preview:
+            return
+        if previewing.get("url") == result.url:
+            stop_preview()
+            render_status(t("status_preview_stopped"), ft.Colors.GREY_300)
+        else:
+            stop_preview()
+            previewing["url"] = result.url
+            if button := play_buttons.get(result.url):
+                button.icon = ft.Icons.STOP
+            render_status(t("status_preview_playing", title=result.title), ft.Colors.BLUE_200)
+            page.run_task(_play_preview, result.preview)
+        safe_update()
+
+    async def _play_preview(url: str) -> None:
+        try:
+            preview_player.src = url  # type: ignore[union-attr]
+            await preview_player.play()  # type: ignore[union-attr]
+        except Exception as err:  # noqa: BLE001 - a sample must never break search
+            stop_preview()
+            render_status(t("status_preview_failed", message=str(err)), ft.Colors.AMBER_300)
+            safe_update()
+
     def render_error(message: str) -> None:
         progress_bar.value = 0
+        hide_busy()
+        empty_text.visible = False
         render_badge(t("badge_failed"), ft.Colors.RED_400)
-        render_status(t("status_error", message=message), ft.Colors.RED_300)
+        if wait := engine.retry_after(message):
+            page.run_task(countdown_retry, wait)
+        else:
+            render_status(t("status_error", message=message), ft.Colors.RED_300)
+
+    async def countdown_retry(wait: int) -> None:
+        """A refusal says when to come back: count it down, then say it plainly."""
+        for remaining in range(wait, 0, -1):
+            render_status(t("status_rate_limited", seconds=remaining), ft.Colors.AMBER_300)
+            safe_update()
+            await asyncio.sleep(1)
+        render_status(t("status_rate_limited_now"), ft.Colors.AMBER_300)
+        safe_update()
 
     # ------------------------------------------------------------------- dialogs
 
@@ -757,7 +883,7 @@ def main(page: ft.Page) -> None:
         set_busy(True)
         render_badge(t("badge_searching"), ft.Colors.BLUE_300)
         render_status(t("status_searching", query=query), ft.Colors.BLUE_200)
-        safe_update()
+        show_busy(t("status_searching", query=query))
         try:
             results = await asyncio.to_thread(engine.search, query)
         except Exception as err:  # noqa: BLE001 - surface any engine failure
@@ -767,24 +893,27 @@ def main(page: ft.Page) -> None:
             render_badge(t("badge_results"), ft.Colors.BLUE_300)
         finally:
             set_busy(False)
-            safe_update()
+            hide_busy()
+            refresh_query_state()
 
     async def run_probe_then_confirm(result: SearchResult) -> None:
         set_busy(True)
         render_badge(t("badge_reading"), ft.Colors.BLUE_300)
         render_status(t("status_reading_album", title=result.title), ft.Colors.BLUE_200)
-        safe_update()
+        show_busy(t("status_reading_album", title=result.title))
         try:
             album = await asyncio.to_thread(engine.probe_album, result.url)
         except Exception as err:  # noqa: BLE001
             render_error(str(err))
         else:
+            hide_busy()
             render_badge(t("badge_confirm"), ft.Colors.BLUE_300)
             render_status(t("status_confirm"), ft.Colors.GREY_300)
             show_album_dialog(album)
         finally:
             set_busy(False)
-            safe_update()
+            refresh_query_state()
+
 
     async def run_download(
         target: str,
@@ -1052,11 +1181,13 @@ def main(page: ft.Page) -> None:
         if state.download_root is None:
             ensure_folder()
             return
+        stop_preview()
         page.run_task(run_search, query)
 
     def start_download(result: SearchResult) -> None:
         state.format = format_dropdown.value or engine.DEFAULT_FORMAT
         state.save()
+        stop_preview()
         if result.kind == "album":
             page.run_task(run_probe_then_confirm, result)
         else:
@@ -1099,6 +1230,22 @@ def main(page: ft.Page) -> None:
             ft.Row([format_dropdown]),
         ]
 
+    center_stack = ft.Stack(
+        [
+            results_list,
+            ft.Container(
+                content=ft.Column(
+                    [busy_spinner, busy_label, empty_text],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=12,
+                ),
+                alignment=ft.Alignment(0, 0),
+                expand=True,
+            ),
+        ],
+        expand=True,
+    )
     page.add(
         ft.Row(
             [
@@ -1112,7 +1259,7 @@ def main(page: ft.Page) -> None:
         *settings_rows,
         ft.Row([query_field, search_btn], spacing=12),
         ft.Divider(),
-        results_list,
+        center_stack,
         progress_bar,
         status_text,
         detail_text,
@@ -1124,6 +1271,7 @@ def main(page: ft.Page) -> None:
         ),
         update_text,
     )
+    refresh_query_state()
 
     if state.download_root is None:
         # Desktop asks where to put the music; a phone is told.
