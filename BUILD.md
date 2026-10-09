@@ -481,7 +481,7 @@ looks like:
 | Payload | In the executable | Unpacked | Why it is there |
 | --- | --- | --- | --- |
 | ffmpeg (from `imageio-ffmpeg`) | 29 MB | 80 MB | Converts to FLAC/MP3/M4A/WAV and crops the video frame that stands in for cover art. A machine that has its own `ffmpeg` on `PATH` still carries this one. |
-| Flet desktop client | 16 MB | 16 MB | The Flutter window. `flet_desktop` unpacks it into `~/.flet/client/` on the first launch. |
+| Flet desktop client | 20 MB | 49 MB | The Flutter window, in its `full` flavor (the `light` one has no audio plugin, see below). `flet_desktop` unpacks it into `~/.flet/client/` on the first launch. |
 | Python modules (the PYZ) | 12 MB | 12 MB | The app plus yt-dlp's extractor registry, which is why it is not 2 MB. |
 | QuickJS | 1 MB | 2.6 MB | yt-dlp runs YouTube's player JS in it to solve the signature challenges. Deno, yt-dlp's default, is 96 MB for the same job. |
 | CPython and its extension modules | 4 MB | 11 MB | The interpreter the app is frozen with. |
@@ -547,6 +547,14 @@ the runtime does not re-hash 40 MB on every launch. The archive is written
 deterministically (fixed timestamps, sorted members, fixed gzip mtime), so
 rebuilding does not change its content fingerprint — an installed copy keeps
 reusing the same unpacked client instead of extracting a fresh one per build.
+
+The **`full`** flavor is asked for by name (`FLET_DESKTOP_FLAVOR` in
+`build.py`, `[tool.flet].desktop_flavor` in `pyproject.toml`). Flet defaults to
+`light` on Linux, and the light client ships **without**
+`libaudioplayers_linux_plugin.so`: the audio service is then never registered
+in the client, so every call on it — the 30s preview — waits for an answer that
+never arrives and dies on a ten-second timeout. The full client costs about
+10 MB unpacked.
 
 `flet_web` is deliberately **not** bundled: it is only used by the web/browser
 view, which Flet selects when no `DISPLAY` is available. The desktop build

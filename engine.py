@@ -8,10 +8,13 @@ because a video's channel, category and thumbnail are not release metadata.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -51,6 +54,11 @@ MATCH_LOOKUPS = 6
 MATCH_WORKERS = 4
 MATCH_STAGGER = 0.4  # seconds between the matching requests
 MATCH_RETRY_PAUSE = 3.0  # seconds between the retries of one pass
+# Files already in a folder are measured before the folder fetches anything,
+# and one measurement is one file played all the way through: they are
+# independent of each other, so they are played together. Four at a time hides
+# each decode behind the next one without turning a laptop into a fan.
+VERIFY_WORKERS = 4
 REFUSED = "YouTube refused the request (rate limit or sign-in check)"
 NO_MATCH = "no match on YouTube"
 # A lookup YouTube refused because this address asked too often, in any of the
@@ -216,8 +224,6 @@ class SearchResult:
     # Where the candidate came from, when it is not YouTube: `SPOTIFY` for a
     # linked playlist or track, whose audio comes from YouTube on download.
     source: str = ""
-    # 30s sample a music database served for this recording, when one matched.
-    preview: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1578,17 +1584,132 @@ def _rank(results: list[SearchResult]) -> list[SearchResult]:
     return sorted(results, key=lambda result: not (result.music or result.kind == "album"))
 
 
-def _preview_for(title: str, artist: str | None, duration: float | None) -> str | None:
-    """30s sample for one resolved track, or None when no database knows it.
+PREVIEW_SECONDS = 30
+# Where fetched samples wait for the player: inside the OS temp dir, under one
+# directory per process, so a second run never replays the first one's files
+# and nothing is left behind in the music folder.
+PREVIEW_CACHE_DIR = Path(tempfile.gettempdir()) / f"cadenza-preview-{os.getpid()}"
 
-    Best effort and silent: a database that is down or does not know the track
-    only means its row plays nothing, never a failed search.
+
+def _sample_format() -> tuple[str, str]:
+    """Encoder and extension the local player can actually decode, as a pair.
+
+    YouTube serves the sample as WebM/Opus, and no desktop player reads it:
+    `flet_audio` drives GStreamer on Linux, Media Foundation on Windows and
+    AVFoundation on macOS, and none of the three opens WebM. So the sample is
+    re-encoded first - measured here: without this the player reports PLAYING
+    and the sound server shows no stream at all, because the source never
+    loaded.
+
+    Which container: Linux takes Ogg/Opus, whose decoder rides in
+    `gst-plugins-base` (which the GStreamer playback stack already needs) even
+    on a machine without `gst-plugins-good`, where MP3, WAV and Matroska all
+    fail. Windows and macOS take AAC in MP4, which both read natively. A phone
+    needs neither: its ExoPlayer reads the WebM as it comes, and a phone has no
+    ffmpeg to convert with anyway.
+    """
+    if settings.is_mobile():
+        return "", ".webm"
+    if sys.platform in ("win32", "darwin"):
+        return "aac", ".m4a"
+    return "libopus", ".ogg"
+
+
+def preview_sample(url: str) -> Path:
+    """The first 30s of `url`'s audio, as a file the player can play.
+
+    Only the sample crosses the network (`--download-sections`): a 600 KB file
+    instead of the whole track. Both the fetched and the converted file are
+    cached per URL, so replaying the same row costs neither a download nor a
+    conversion. Raises DownloadError when the sample cannot be fetched.
+    """
+    return _playable_sample(_fetch_sample(url), url)
+
+
+def _fetch_sample(url: str) -> Path:
+    """Download the 30s sample for `url` as it comes, cached per URL."""
+    from yt_dlp.utils import DownloadError as YtDlpDownloadError
+
+    PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(url.encode()).hexdigest()[:16]
+    target = PREVIEW_CACHE_DIR / f"{digest}.webm"
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    outtmpl = str(PREVIEW_CACHE_DIR / f"{digest}.%(ext)s")
+    opts = _base_opts() | {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "download_ranges": lambda *_: [{"start_time": 0, "end_time": PREVIEW_SECONDS}],
+        "force_keyframes_at_cuts": True,
+    }
+    last: Exception | None = None
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+    except (YtDlpDownloadError, OSError) as err:
+        last = err
+        # Fail at once, refusal or not: the UI counts a refusal's wait down on
+        # the status line, and a 90s block inside the fetch would leave the
+        # row's spinner spinning with no word on why.
+        raise DownloadError(_clean_message(err)) from err
+    if not (target.is_file() and target.stat().st_size > 0):
+        got = sorted(PREVIEW_CACHE_DIR.glob(f"{digest}.*"))
+        if got:
+            return got[0]
+        raise DownloadError(
+            _clean_message(last) if last else f"No preview could be fetched from {url}"
+        )
+    return target
+
+
+def _playable_sample(source: Path, url: str) -> Path:
+    """`source` in the container this platform's player can decode.
+
+    Best effort, and cheap to fail: with nothing to convert with, the fetched
+    file is handed over as it is - the same thing the player would have been
+    given anyway - and a sample that will not play is reported like any other.
+    """
+    codec, extension = _sample_format()
+    if not codec or source.suffix == extension:
+        return source
+    converted = source.with_suffix(extension)
+    if converted.is_file() and converted.stat().st_size > 0:
+        return converted
+    ffmpeg = find_ffmpeg()
+    if ffmpeg is None:
+        return source
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-v", "error", "-i", str(source), "-c:a", codec, str(converted)],
+            check=True,
+            capture_output=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return source
+    if converted.is_file() and converted.stat().st_size > 0:
+        return converted
+    return source
+
+
+
+def stream_url(url: str) -> str:
+    """Direct audio stream URL for `url`, for the row's play button.
+
+    Raises DownloadError when the stream cannot be resolved: the caller reports
+    it the same way it reports a sample that will not play.
     """
     try:
-        match = metadata.lookup(title, artist, duration)
-    except Exception:  # noqa: BLE001 - a preview must never break a search
-        return None
-    return match.preview if match is not None else None
+        with _ydl() as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as err:  # noqa: BLE001 - yt-dlp owns every failure mode
+        raise DownloadError(str(err)) from err
+    formats = info.get("requested_formats") or info.get("formats") or []
+    audio = [f for f in formats if f.get("acodec") not in (None, "none") and f.get("url")]
+    # Highest bitrate first: this is the preview, not the download.
+    audio.sort(key=lambda f: f.get("abr") or 0, reverse=True)
+    if not audio:
+        raise DownloadError(f"No audio stream found at {url}")
+    return str(audio[0]["url"])
 
 def _resolve_entry(entry: dict) -> SearchResult | None:
     """Fill in the metadata the flat search result does not carry."""
@@ -1610,7 +1731,6 @@ def _resolve_entry(entry: dict) -> SearchResult | None:
             artist=artist,
             track_count=len(entries),
             music=_is_music(info),
-            preview=None,
         )
 
     title = info.get("title") or entry.get("title")
@@ -1624,7 +1744,6 @@ def _resolve_entry(entry: dict) -> SearchResult | None:
         duration=info.get("duration"),
         album=info.get("album"),
         music=_is_music(info),
-        preview=_preview_for(title, _clean_artist(info.get("artist") or info.get("uploader")), info.get("duration")),
     )
 
 

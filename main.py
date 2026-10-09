@@ -56,6 +56,55 @@ def format_duration(seconds: float | None) -> str:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
 
+def query_has_text(value: str | None) -> bool:
+    """A query worth acting on: the X shows and Buscar enables only then."""
+    return bool((value or "").strip())
+
+
+def refresh_query_widgets(
+    field: ft.TextField,
+    clear_btn: ft.IconButton,
+    search_btn: ft.FilledButton,
+    working: bool,
+) -> bool:
+    """Fade the X in and out, and enable Buscar; returns whether there is text.
+
+    The X stays in the layout (opacity, never `visible`): adding or removing
+    the suffix resizes the field on the keystroke that shows or hides it.
+    """
+    has_text = query_has_text(field.value)
+    clear_btn.opacity = 1.0 if has_text else 0.0
+    clear_btn.disabled = not has_text
+    search_btn.disabled = working or not has_text
+    return has_text
+
+
+# The three states one row's play cell can be in.
+PREVIEW_IDLE = "idle"
+PREVIEW_LOADING = "loading"
+PREVIEW_PLAYING = "playing"
+
+
+def apply_preview_state(
+    button: ft.IconButton | None,
+    spinner: ft.ProgressRing | None,
+    state: str,
+) -> None:
+    """Put one row's play cell into `state`, touching nothing but properties.
+
+    A row is routinely off the page when this runs - a new search clears the
+    list before it is replaced, and that is exactly when the previous rows are
+    told to go back to rest - so this must never call `update()`: a detached
+    control raises there, and the exception would escape through the caller
+    (the render, or the download button's own handler) and kill it. Pushing
+    what changed is the caller's `safe_update`.
+    """
+    if button is not None:
+        button.icon = ft.Icons.STOP if state == PREVIEW_PLAYING else ft.Icons.PLAY_ARROW
+        button.visible = state != PREVIEW_LOADING
+    if spinner is not None:
+        spinner.visible = state == PREVIEW_LOADING
+
 
 def _read_tags(path: Path) -> dict[str, str]:
     """Read container tags back with the same ffmpeg the engine uses."""
@@ -275,12 +324,14 @@ def main(page: ft.Page) -> None:
     # Mobile only: the directory the system gives this app for its files.
     storage_paths = ft.StoragePaths()
     page.services.append(storage_paths)
-    # The 30s sample each track row can play: one player shared by the list.
-    # `src` is required by the control, so it starts muted on a placeholder
-    # that is replaced before the first play.
-    preview_player = fta.Audio(src="https://cdn.pixabay.com/audio/silence.mp3") if fta else None
-    if preview_player is not None:
-        page.services.append(preview_player)
+    # The 30s sample each track row can play: one player shared by the list,
+    # built the first time a row is played. `src` is required by the control,
+    # so a player made before there is anything to play has to be handed some
+    # stand-in source - and every platform fails to open a different one, which
+    # is an error printed on startup and on every update for a sound nobody
+    # asked for. Made on the press, it is born with the sample already set.
+    has_audio = fta is not None
+    preview_player: fta.Audio | None = None
 
     badge_label = ft.Text(
         t("badge_ready"), size=12, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_400
@@ -304,14 +355,16 @@ def main(page: ft.Page) -> None:
     # when neither ffmpeg nor the in-process converter is present; the dropdown
     # then simply holds no choice.
     formats = engine.available_formats()
+    saved_format = state.format if state.format in formats else None
+    if state.format is not None and saved_format is None:
+        # A format the machine can no longer produce (Android without MP3):
+        # forget it now instead of offering a download that fails halfway.
+        state.format = None
+        state.save()
     format_dropdown = ft.Dropdown(
         label=t("format"),
         width=200,
-        value=(
-            state.format
-            if state.format in formats
-            else engine.DEFAULT_FORMAT if engine.DEFAULT_FORMAT in formats else None
-        ),
+        value=saved_format or (engine.DEFAULT_FORMAT if engine.DEFAULT_FORMAT in formats else None),
         options=[ft.DropdownOption(key, t(f"format_{key}")) for key in formats],
         on_select=lambda _: remember_format(),
     )
@@ -320,7 +373,10 @@ def main(page: ft.Page) -> None:
         icon=ft.Icons.CLEAR,
         icon_size=20,
         tooltip=t("clear_query"),
-        visible=False,
+        # Always laid out, only faded: `visible=False` removes the suffix and
+        # the field resizes on the keystroke that shows or hides it.
+        opacity=0.0,
+        disabled=True,
         on_click=lambda _: clear_query(),
     )
     query_field = ft.TextField(
@@ -328,6 +384,10 @@ def main(page: ft.Page) -> None:
         hint_text=t("query_hint"),
         expand=True,
         autofocus=True,
+        # The label floats above the text: without this the value sits low,
+        # with a tall empty gap above it.
+        text_vertical_align=ft.VerticalAlignment.CENTER,
+        content_padding=ft.Padding.symmetric(vertical=14, horizontal=12),
         suffix=clear_btn,
         on_change=lambda _: refresh_query_state(),
         on_submit=lambda _: start_search(),
@@ -345,6 +405,21 @@ def main(page: ft.Page) -> None:
     busy_spinner = ft.ProgressRing(width=40, height=40, visible=False)
     busy_label = ft.Text("", size=13, color=ft.Colors.BLUE_200, visible=False)
     empty_text = ft.Text(t("status_empty"), size=13, color=ft.Colors.GREY_500, visible=False)
+    # The overlay that centres the spinner over the list. It is kept out of the
+    # layout unless it has something to say: a Container that fills the list
+    # area sits above it and swallows the pointer events meant for the rows, so
+    # while it is empty the play and download buttons stop answering.
+    busy_overlay = ft.Container(
+        content=ft.Column(
+            [busy_spinner, busy_label, empty_text],
+            alignment=ft.MainAxisAlignment.CENTER,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            spacing=12,
+        ),
+        alignment=ft.Alignment(0, 0),
+        expand=True,
+        visible=False,
+    )
     progress_bar = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=3)
     status_text = ft.Text(t("status_start"), size=13, selectable=True)
     # A playlist that came out short has to say so: this is the line that names
@@ -436,16 +511,32 @@ def main(page: ft.Page) -> None:
 
     def refresh_query_state() -> None:
         """The X, and whether Buscar can run: only with text, never while busy."""
-        has_text = bool((query_field.value or "").strip())
-        clear_btn.visible = has_text
-        search_btn.disabled = working or not has_text
+        refresh_query_widgets(query_field, clear_btn, search_btn, working)
         safe_update()
 
     def clear_query() -> None:
         query_field.value = ""
         stop_preview()
+        # Clearing triggers on_change → refresh_query_state on its own; the
+        # direct call below is the backstop for programmatic clears.
         refresh_query_state()
-        page.focus(query_field)
+        try:
+            # Focus lives on the control (`TextField.focus` is a coroutine);
+            # `Page` has no `focus`, so reaching for it crashed the app here.
+            page.run_task(query_field.focus)
+        except RuntimeError:
+            pass  # window closed mid-click: nothing left to focus
+
+    def sync_overlay() -> None:
+        """Show the overlay only while it holds something.
+
+        It fills the list area and sits above the rows: left in the layout
+        while it is empty it takes every pointer event the play and download
+        buttons were waiting for, and both stop answering.
+        """
+        busy_overlay.visible = (
+            busy_spinner.visible or busy_label.visible or empty_text.visible
+        )
 
     def show_busy(message: str) -> None:
         """Spinner in the middle of the list area, with what is happening."""
@@ -454,11 +545,13 @@ def main(page: ft.Page) -> None:
         busy_label.value = message
         busy_spinner.visible = True
         busy_label.visible = True
+        sync_overlay()
         safe_update()
 
     def hide_busy() -> None:
         busy_spinner.visible = False
         busy_label.visible = False
+        sync_overlay()
 
     def safe_update() -> None:
         """Push UI changes from background tasks; the session dies if the window closes."""
@@ -489,18 +582,33 @@ def main(page: ft.Page) -> None:
         results_list.controls.clear()
         row_buttons.clear()
         stop_preview()
+        # The rows just cleared are gone from the page: drop their widgets with
+        # them, or the next `stop_preview` reaches for one that is off the page.
+        play_buttons.clear()
+        preview_spinners.clear()
         hide_busy()
         empty_text.visible = not results
+        sync_overlay()
         for result in results:
             actions: list[ft.Control] = []
-            if result.kind == "track" and result.preview and preview_player is not None:
+            if result.kind == "track" and has_audio:
+                # Every track plays the song that was asked for: the first 30s
+                # of its own audio, fetched when play is pressed so the search
+                # never waits for it. The spinner covers the fetch; the square
+                # stops it.
                 play_btn = ft.IconButton(
                     icon=ft.Icons.PLAY_ARROW,
                     tooltip=t("tooltip_preview"),
                     on_click=lambda _, item=result: toggle_preview(item),
                 )
+                # The spinner rides on top of the arrow: same cell, so showing
+                # it never moves the row, and it paints even before any update
+                # reaches the client because it is in the layout from the start.
+                spinner = ft.ProgressRing(width=20, height=20, stroke_width=2, visible=False)
+                stack = ft.Stack([play_btn, spinner], width=40, height=40, alignment=ft.Alignment(0, 0))
                 play_buttons[result.url] = play_btn
-                actions.append(play_btn)
+                preview_spinners[result.url] = spinner
+                actions.append(stack)
             button = ft.IconButton(
                 icon=ft.Icons.DOWNLOAD,
                 tooltip=t("tooltip_download_album" if result.kind == "album" else "tooltip_download_track"),
@@ -652,10 +760,18 @@ def main(page: ft.Page) -> None:
             ft.Colors.GREEN_300,
         )
 
-    # Which result row is previewing, and its button: one sample at a time, so
-    # starting one stops the other and the old icon goes back to play.
+    # Which result row is previewing, and its widgets: one sample at a time, so
+    # starting one stops the other and the old row goes back to play.
     previewing: dict[str, str] = {}
     play_buttons: dict[str, ft.IconButton] = {}
+    preview_spinners: dict[str, ft.ProgressRing] = {}
+
+    def row_state(url: str, state: str) -> None:
+        """One row's play cell into `state`; never pushes, so it is safe on a
+        row that a new search has already taken off the page."""
+        apply_preview_state(
+            play_buttons.get(url), preview_spinners.get(url), state
+        )
 
     def stop_preview() -> None:
         """Silence the shared player and reset every row icon to play."""
@@ -663,8 +779,8 @@ def main(page: ft.Page) -> None:
             previewing.clear()
             if preview_player is not None:
                 page.run_task(_release_preview)
-        for button in play_buttons.values():
-            button.icon = ft.Icons.PLAY_ARROW
+        for url in play_buttons:
+            row_state(url, PREVIEW_IDLE)
 
     async def _release_preview() -> None:
         try:
@@ -673,24 +789,82 @@ def main(page: ft.Page) -> None:
             pass
 
     def toggle_preview(result: SearchResult) -> None:
-        if preview_player is None or not result.preview:
+        if not has_audio or result.kind != "track":
             return
         if previewing.get("url") == result.url:
             stop_preview()
             render_status(t("status_preview_stopped"), ft.Colors.GREY_300)
-        else:
-            stop_preview()
-            previewing["url"] = result.url
-            if button := play_buttons.get(result.url):
-                button.icon = ft.Icons.STOP
-            render_status(t("status_preview_playing", title=result.title), ft.Colors.BLUE_200)
-            page.run_task(_play_preview, result.preview)
+            safe_update()
+            return
+        # The 30s of the song itself, fetched on press so the search never
+        # waits for it. A database sample is instant when one matched; the
+        # video's own audio is cut to 30s otherwise.
+        stop_preview()
+        row_state(result.url, PREVIEW_LOADING)
+        render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
         safe_update()
+        page.run_task(_play_sample, result)
+
+    async def _play_sample(result: SearchResult) -> None:
+        try:
+            # Always the track that was asked for, never a database's stand-in
+            # for it: that URL is a different recording of the same song, and
+            # it arrives in whatever container the database serves (MP3, AAC),
+            # which the local player may not be able to decode at all.
+            path = await asyncio.to_thread(engine.preview_sample, result.url)
+            url = path.as_uri()
+        except Exception as err:  # noqa: BLE001 - a sample must never break search
+            if previewing.get("url") != result.url:
+                row_state(result.url, PREVIEW_IDLE)
+                message = str(err)
+                if wait := engine.retry_after(message):
+                    # A refusal, not a verdict: count the wait down on the
+                    # status line, then say it plainly like a search does.
+                    page.run_task(countdown_preview, result, wait)
+                else:
+                    render_status(t("status_preview_failed", message=message), ft.Colors.AMBER_300)
+                    safe_update()
+            return
+        if previewing.get("url") == result.url:
+            # Stopped or switched while fetching: never play over the new one.
+            return
+        stop_preview()
+        previewing["url"] = result.url
+        row_state(result.url, PREVIEW_PLAYING)
+        render_status(t("status_preview_playing", title=result.title), ft.Colors.BLUE_200)
+        safe_update()
+        await _play_preview(url)
+
+    async def countdown_preview(result: SearchResult, wait: int) -> None:
+        """A refused sample says when to come back: count it down, then retry."""
+        for remaining in range(wait, 0, -1):
+            render_status(t("status_rate_limited", seconds=remaining), ft.Colors.AMBER_300)
+            safe_update()
+            await asyncio.sleep(1)
+        render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
+        safe_update()
+        page.run_task(_play_sample, result)
 
     async def _play_preview(url: str) -> None:
+        nonlocal preview_player
         try:
-            preview_player.src = url  # type: ignore[union-attr]
-            await preview_player.play()  # type: ignore[union-attr]
+            if preview_player is None:
+                # Born with the sample already set: see where it is declared.
+                preview_player = fta.Audio(src=url)  # type: ignore[union-attr]
+                page.services.append(preview_player)
+                # Let the client mount it before it is asked to play anything.
+                safe_update()
+            else:
+                preview_player.src = url
+                # Push the new source to the client *before* asking it to
+                # play: without this the player resumes the previous source
+                # instead of the sample just fetched.
+                preview_player.update()
+            # No position: `play()` defaults to 0, and the plugin turns that
+            # into a `seek(0)` that waits for a "seek complete" the player
+            # never sends before it has a source - the call then sits there
+            # until it times out and the preview never starts.
+            await preview_player.play(position=None)
         except Exception as err:  # noqa: BLE001 - a sample must never break search
             stop_preview()
             render_status(t("status_preview_failed", message=str(err)), ft.Colors.AMBER_300)
@@ -700,6 +874,7 @@ def main(page: ft.Page) -> None:
         progress_bar.value = 0
         hide_busy()
         empty_text.visible = False
+        sync_overlay()
         render_badge(t("badge_failed"), ft.Colors.RED_400)
         if wait := engine.retry_after(message):
             page.run_task(countdown_retry, wait)
@@ -1233,16 +1408,7 @@ def main(page: ft.Page) -> None:
     center_stack = ft.Stack(
         [
             results_list,
-            ft.Container(
-                content=ft.Column(
-                    [busy_spinner, busy_label, empty_text],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=12,
-                ),
-                alignment=ft.Alignment(0, 0),
-                expand=True,
-            ),
+            busy_overlay,
         ],
         expand=True,
     )
@@ -1293,7 +1459,24 @@ def main(page: ft.Page) -> None:
     page.run_task(reveal_window)
 
 
+def pin_client_flavor() -> None:
+    """Ask for the Flet desktop client this app ships: the `full` one.
+
+    `flet_desktop` resolves the flavor *at startup*: an environment variable,
+    else `[tool.flet].desktop_flavor` in the `pyproject.toml` of the current
+    directory, else `light` on Linux. So the same executable, launched from the
+    project directory, got the full client and its audio plugin, while launched
+    from anywhere else - a launcher, a file manager, another shell - it got the
+    light one, which ships without `libaudioplayers_linux_plugin.so`: every call
+    on the audio service then waits for an answer that never comes, and the 30s
+    preview dies on a ten-second timeout. Pinned here, it is the same client
+    wherever the app is run from.
+    """
+    os.environ["FLET_DESKTOP_FLAVOR"] = "full"
+
+
 if __name__ == "__main__":
+    pin_client_flavor()
     if "--selftest" in sys.argv:
         raise SystemExit(selftest(download="--no-download" not in sys.argv))
     if "--check-updates" in sys.argv:

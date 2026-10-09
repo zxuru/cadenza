@@ -29,6 +29,12 @@ product = "Cadenza"
 company = "zxuru"
 copyright = "Cadenza"
 build_number = 1
+# The desktop client flavor. `full` is not a preference: Flet defaults to
+# `light` on Linux and the light client ships without the audioplayers plugin,
+# so the 30s preview's every call waits for an answer that never comes. About
+# 10 MB more, and the play button works. (`build.py` asks for the same by name
+# when it stages the client into the frozen executable.)
+desktop_flavor = "full"
 
 # Only the app's own files are packaged: the virtualenv, the two build trees
 # and the docs are build-time material and must not ride into an APK.

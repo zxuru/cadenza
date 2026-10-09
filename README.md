@@ -61,6 +61,12 @@ afterwards — "Change folder" moves it. Downloads are one folder per album.
 - **Search** returns tracks and albums from YouTube, music uploads first: the
   same recording is usually on YouTube both as the release and as a re-upload by
   an unrelated channel, and only one of the two carries the release's metadata.
+- **A 30s sample of any result plays in place.** The row's play button fetches
+  the first 30 seconds of that track's own audio — a music database sample is
+  used as it is when one matched — re-encodes it to a container the machine's
+  player can actually read (YouTube serves WebM, which no desktop player opens)
+  and plays it. The sample is cached, so pressing play again costs neither a
+  download nor a conversion. A spinner covers the fetch; the square stops it.
 - **An album is read before it is downloaded.** Pick one and the track list
   appears; the download starts when you confirm it. Each track keeps the
   position it has in the release you picked.

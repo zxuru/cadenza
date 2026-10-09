@@ -269,9 +269,17 @@ def stage_flet_client(stage_dir: Path) -> tuple[Path, Path]:
     written deterministically (fixed timestamps, sorted members), so that
     rebuilding does not change its fingerprint and therefore does not make
     every user re-extract the client into a new cache directory.
+
+    The `full` flavor is asked for by name.  Flet defaults to `light` on Linux,
+    and the light client ships without `libaudioplayers_linux_plugin.so`: the
+    audio service is then never registered in the client, so every call on it
+    (the 30s preview) waits for an answer that never comes and dies on a
+    timeout.  It costs about 10 MB and it is the difference between a play
+    button that works and one that cannot.
     """
     import flet_desktop
 
+    os.environ["FLET_DESKTOP_FLAVOR"] = "full"
     client_dir = Path(flet_desktop.ensure_client_cached())
     artifact = flet_desktop.get_artifact_filename()
     archive = stage_dir / artifact
