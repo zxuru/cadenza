@@ -21,6 +21,10 @@ PROJECT = Path(__file__).resolve().parents[1]
 # `t(f"format_{key}")` family - are not literal, so they are not matched here.
 ASKED = re.compile(r"""\bt\(\s*"([A-Za-z0-9_]+)"|\bt\.plural\(\s*"([A-Za-z0-9_]+)\"""")
 
+# Every module that builds UI: a string moved from `main.py` into the styled
+# components must stay under this scan, or it leaves it without a sound.
+UI_MODULES = ["main.py", "components.py"]
+
 
 def keys_asked_for(path: Path) -> set[str]:
     found: set[str] = set()
@@ -29,10 +33,11 @@ def keys_asked_for(path: Path) -> set[str]:
     return found
 
 
-@pytest.mark.parametrize("module", ["main.py"])
+@pytest.mark.parametrize("module", UI_MODULES)
 def test_every_key_the_ui_asks_for_exists(module):
     asked = keys_asked_for(PROJECT / module)
-    assert asked, f"no keys found in {module}: the scan is broken, not the locales"
+    if module == "main.py":
+        assert asked, "no keys found in main.py: the scan is broken, not the locales"
     catalog = i18n.catalog(i18n.DEFAULT_LANGUAGE)
     missing = sorted(key for key in asked if key not in catalog)
     assert not missing, f"{module} asks for keys no locale file holds: {missing}"

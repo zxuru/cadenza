@@ -22,18 +22,24 @@ except ImportError:  # preview player is optional: rows then play nothing
     fta = None  # type: ignore[assignment]
 
 import bundle
+import components
 import engine
 import i18n
 import logs
 import pending
 import settings as config
+import styles
 import update
 import version
 from engine import AlbumInfo, Progress, SearchResult, Track
 
 POLL_INTERVAL = 0.1
-WINDOW_SIZE = (760, 640)
-WINDOW_MIN_SIZE = (560, 460)
+# Wide enough for the two-column settings bar: the layout folds below 768, so a
+# narrower default would open the desktop window already folded.
+WINDOW_SIZE = (960, 700)
+WINDOW_MIN_SIZE = (560, 480)
+# Below this the header drops its mark, which is decoration, not information.
+COMPACT_WIDTH = 480
 
 # Version a `--updated` relaunch was performed to, so the new build can say so.
 UPDATED_TO: str | None = None
@@ -315,7 +321,11 @@ def main(page: ft.Page) -> None:
 
     page.title = config.APP_NAME
     page.theme_mode = ft.ThemeMode.DARK
-    page.padding = 20
+    page.theme = styles.theme()
+    page.dark_theme = styles.theme()
+    page.bgcolor = styles.PALETTE["bg"]
+    page.padding = styles.SPACE["lg"]
+    page.spacing = styles.SPACE["md"]
     if desktop:
         # The client opens its window at its own default size, so start hidden
         # and reveal it once the real geometry is known - otherwise it visibly
@@ -342,22 +352,10 @@ def main(page: ft.Page) -> None:
     has_audio = fta is not None
     preview_player: fta.Audio | None = None
 
-    badge_label = ft.Text(
-        t("badge_ready"), size=12, weight=ft.FontWeight.W_600, color=ft.Colors.GREY_400
-    )
-    status_badge = ft.Container(
-        content=badge_label,
-        padding=ft.Padding.symmetric(vertical=4, horizontal=10),
-        border_radius=12,
-        bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.GREY_400),
-    )
+    badge_label = ft.Text(t("badge_ready"), style=styles.label(styles.PALETTE["text_dim"]))
+    status_badge = components.status_chip(badge_label)
 
-    folder_text = ft.Text(size=12, color=ft.Colors.GREY_400, max_lines=1)
-    if not desktop:
-        # A phone puts a long path next to a button: let the path ellipsize
-        # instead of pushing the button off the screen.
-        folder_text.expand = True
-        folder_text.overflow = ft.TextOverflow.ELLIPSIS
+    folder_text = ft.Text(style=styles.readout(12, styles.PALETTE["text_dim"]), max_lines=1)
     # A phone has no ffmpeg executable: only the formats its bundled encoder
     # can produce are offered, so the dropdown never promises a conversion that
     # would fail halfway through a download. Nothing at all can be produced
@@ -370,71 +368,53 @@ def main(page: ft.Page) -> None:
         # forget it now instead of offering a download that fails halfway.
         state.format = None
         state.save()
-    format_dropdown = ft.Dropdown(
-        label=t("format"),
-        width=200,
-        value=saved_format or (engine.DEFAULT_FORMAT if engine.DEFAULT_FORMAT in formats else None),
-        options=[ft.DropdownOption(key, t(f"format_{key}")) for key in formats],
-        on_select=lambda _: remember_format(),
+    format_dropdown = components.format_dropdown(
+        t("format"),
+        [ft.DropdownOption(key, t(f"format_{key}")) for key in formats],
+        saved_format or (engine.DEFAULT_FORMAT if engine.DEFAULT_FORMAT in formats else None),
+        lambda _: remember_format(),
     )
 
-    clear_btn = ft.IconButton(
-        icon=ft.Icons.CLEAR,
-        icon_size=20,
-        tooltip=t("clear_query"),
-        # Always laid out, only faded: `visible=False` removes the suffix and
-        # the field resizes on the keystroke that shows or hides it.
-        opacity=0.0,
+    clear_btn = components.icon_button(
+        ft.Icons.CLEAR,
+        t("clear_query"),
+        lambda _: clear_query(),
+        size=20,
         disabled=True,
-        on_click=lambda _: clear_query(),
     )
-    query_field = ft.TextField(
-        label=t("query_label"),
-        hint_text=t("query_hint"),
-        expand=True,
-        autofocus=True,
-        # The label floats above the text: without this the value sits low,
-        # with a tall empty gap above it.
-        text_vertical_align=ft.VerticalAlignment.CENTER,
-        content_padding=ft.Padding.symmetric(vertical=14, horizontal=12),
-        suffix=clear_btn,
-        on_change=lambda _: refresh_query_state(),
-        on_submit=lambda _: start_search(),
+    # Always laid out, only faded: `visible=False` removes the suffix and the
+    # field resizes on the keystroke that shows or hides it.
+    clear_btn.opacity = 0.0
+    query_field = components.query_field(
+        t("query_label"),
+        t("query_hint"),
+        clear_btn,
+        lambda _: refresh_query_state(),
+        lambda _: start_search(),
     )
-    search_btn = ft.FilledButton(
-        content=t("search"),
-        icon=ft.Icons.SEARCH,
-        disabled=True,
-        on_click=lambda _: start_search(),
+    search_btn = components.primary_button(
+        t("search"), ft.Icons.SEARCH, lambda _: start_search(), disabled=True
     )
 
-    results_list = ft.ListView(expand=True, spacing=2, padding=ft.Padding.only(top=8))
+    results_list = components.results_list()
     # Shown while a search or an album read runs: a spinner in the middle of the
     # list area, which is also where an empty search says it found nothing.
-    busy_spinner = ft.ProgressRing(width=40, height=40, visible=False)
-    busy_label = ft.Text("", size=13, color=ft.Colors.BLUE_200, visible=False)
-    empty_text = ft.Text(t("status_empty"), size=13, color=ft.Colors.GREY_500, visible=False)
+    busy_spinner = components.spinner(40)
+    busy_label = ft.Text("", style=styles.readout(13, styles.PALETTE["primary"]), visible=False)
+    empty_text = ft.Text(
+        t("status_empty"), style=styles.readout(13, styles.PALETTE["text_dim"]), visible=False
+    )
     # The overlay that centres the spinner over the list. It is kept out of the
     # layout unless it has something to say: a Container that fills the list
     # area sits above it and swallows the pointer events meant for the rows, so
     # while it is empty the play and download buttons stop answering.
-    busy_overlay = ft.Container(
-        content=ft.Column(
-            [busy_spinner, busy_label, empty_text],
-            alignment=ft.MainAxisAlignment.CENTER,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            spacing=12,
-        ),
-        alignment=ft.Alignment(0, 0),
-        expand=True,
-        visible=False,
-    )
-    progress_bar = ft.ProgressBar(visible=False, value=0, bar_height=6, border_radius=3)
-    status_text = ft.Text(t("status_start"), size=13, selectable=True)
+    busy_overlay = components.busy_overlay(busy_spinner, busy_label, empty_text)
+    progress_bar = components.progress_bar()
+    status_text = ft.Text(t("status_start"), style=styles.body(13), selectable=True)
     # A playlist that came out short has to say so: this is the line that names
     # the tracks left out and the reason, and it stays after the run ends.
     detail_text = ft.Text(
-        size=12, color=ft.Colors.AMBER_300, selectable=True, visible=False
+        style=styles.body(12, styles.PALETTE["warn"]), selectable=True, visible=False
     )
     skipped: list[Progress] = []  # tracks this run could not fetch
     present: list[Progress] = []  # tracks it left alone: already in the folder
@@ -449,24 +429,26 @@ def main(page: ft.Page) -> None:
 
     version_label = ft.Text(
         f"{config.APP_NAME} {version.current()}",
-        size=11,
-        color=ft.Colors.GREY_500,
+        style=styles.readout(11, styles.PALETTE["text_faint"]),
         selectable=True,
     )
-    update_text = ft.Text(size=11, color=ft.Colors.GREY_500, visible=False, max_lines=3)
-    update_button = ft.TextButton(
+    update_text = ft.Text(
+        style=styles.readout(11, styles.PALETTE["text_faint"]), visible=False, max_lines=3
+    )
+    update_button = components.ghost_button(
         t("update_check"),
-        icon=ft.Icons.REFRESH,
-        on_click=lambda event: press_update(event),
+        ft.Icons.REFRESH,
+        lambda event: press_update(event),
     )
     # Tracks an earlier run could not fetch: the button appears when there are
     # any, and finishing them costs one lookup each - what is on disk stays.
-    retry_button = ft.TextButton(
+    retry_button = components.ghost_button(
         "",
-        icon=ft.Icons.REPLAY,
-        visible=False,
-        on_click=lambda _: run_task(retry_pending),
+        ft.Icons.REPLAY,
+        lambda _: run_task(retry_pending),
+        color=styles.PALETTE["warn"],
     )
+    retry_button.visible = False
     # A phone installs nothing from inside the app: a newer release is offered
     # as its page, which the browser downloads the APK from - and the browser
     # is the one place that is already signed in to GitHub, which a private
@@ -484,9 +466,10 @@ def main(page: ft.Page) -> None:
     def render_badge(label: str, color: str) -> None:
         badge_label.value = label
         badge_label.color = color
-        status_badge.bgcolor = ft.Colors.with_opacity(0.15, color)
+        status_badge.bgcolor = styles.tint(color, 0.12)
+        status_badge.border = styles.hairline(color, alpha=0.45)
 
-    def render_status(message: str, color: str = ft.Colors.GREY_300) -> None:
+    def render_status(message: str, color: str = styles.PALETTE["text"]) -> None:
         status_text.value = message
         status_text.color = color
 
@@ -494,9 +477,11 @@ def main(page: ft.Page) -> None:
         folder_text.value = (
             str(state.download_root) if state.download_root else t("folder_none")
         )
-        folder_text.color = ft.Colors.GREY_400 if state.download_root else ft.Colors.AMBER_300
+        folder_text.color = (
+            styles.PALETTE["text_dim"] if state.download_root else styles.PALETTE["warn"]
+        )
 
-    def render_update(message: str, color: str = ft.Colors.GREY_500) -> None:
+    def render_update(message: str, color: str = styles.PALETTE["text_faint"]) -> None:
         """The footer line: what the updater is doing, or nothing at all."""
         update_text.value = message
         update_text.color = color
@@ -605,40 +590,39 @@ def main(page: ft.Page) -> None:
                 # of its own audio, fetched when play is pressed so the search
                 # never waits for it. The spinner covers the fetch; the square
                 # stops it.
-                play_btn = ft.IconButton(
-                    icon=ft.Icons.PLAY_ARROW,
-                    tooltip=t("tooltip_preview"),
-                    on_click=lambda _, item=result: toggle_preview(item),
+                play_btn = components.icon_button(
+                    ft.Icons.PLAY_ARROW,
+                    t("tooltip_preview"),
+                    lambda _, item=result: toggle_preview(item),
                 )
                 # The spinner rides on top of the arrow: same cell, so showing
                 # it never moves the row, and it paints even before any update
                 # reaches the client because it is in the layout from the start.
-                spinner = ft.ProgressRing(width=20, height=20, stroke_width=2, visible=False)
-                stack = ft.Stack([play_btn, spinner], width=40, height=40, alignment=ft.Alignment(0, 0))
+                spinner = components.spinner(20, stroke=2)
+                stack = components.play_cell(play_btn, spinner)
                 play_buttons[result.url] = play_btn
                 preview_spinners[result.url] = spinner
                 actions.append(stack)
-            button = ft.IconButton(
-                icon=ft.Icons.DOWNLOAD,
-                tooltip=t("tooltip_download_album" if result.kind == "album" else "tooltip_download_track"),
-                on_click=lambda _, item=result: start_download(item),
+            button = components.icon_button(
+                ft.Icons.DOWNLOAD,
+                t("tooltip_download_album" if result.kind == "album" else "tooltip_download_track"),
+                lambda _, item=result: start_download(item),
             )
             row_buttons.append(button)
             actions.append(button)
+            album = result.kind == "album"
             results_list.controls.append(
-                ft.ListTile(
-                    leading=ft.Icon(
-                        ft.Icons.ALBUM if result.kind == "album" else ft.Icons.MUSIC_NOTE,
-                        color=ft.Colors.BLUE_300 if result.kind == "album" else ft.Colors.GREEN_300,
-                    ),
-                    title=ft.Text(result.title, size=14),
-                    subtitle=ft.Text(subtitle_for(result), size=12, color=ft.Colors.GREY_400),
-                    trailing=ft.Row(actions, spacing=0, tight=True),
+                components.result_tile(
+                    ft.Icons.ALBUM if album else ft.Icons.MUSIC_NOTE,
+                    styles.PALETTE["primary"] if album else styles.PALETTE["ok"],
+                    ft.Text(result.title, style=styles.body(14)),
+                    ft.Text(subtitle_for(result), style=styles.body(12, styles.PALETTE["text_dim"])),
+                    actions,
                 )
             )
         render_status(
             t.plural("status_results", len(results)) if results else t("status_empty"),
-            ft.Colors.GREY_300,
+            styles.PALETTE["text"],
         )
 
     def render_progress(progress: Progress, target_format: str, album_title: str | None) -> None:
@@ -690,20 +674,20 @@ def main(page: ft.Page) -> None:
             # YouTube Music before anything is downloaded.
             progress_bar.value = None
             parts.append(t("status_matching"))
-            render_status(" · ".join(parts), ft.Colors.BLUE_200)
+            render_status(" · ".join(parts), styles.PALETTE["primary"])
             return
 
         if progress.stage == "converting":
             progress_bar.value = None  # indeterminate while ffmpeg runs
             parts.append(t("status_extracting", format=target_format.upper()))
-            render_status(" · ".join(parts), ft.Colors.BLUE_200)
+            render_status(" · ".join(parts), styles.PALETTE["primary"])
             return
 
         if progress.stage == "tagging":
             # The audio is on disk; the tags are being looked up in a database.
             progress_bar.value = None
             parts.append(t("status_tagging"))
-            render_status(" · ".join(parts), ft.Colors.BLUE_200)
+            render_status(" · ".join(parts), styles.PALETTE["primary"])
             return
 
         progress_bar.value = (progress.percent or 0) / 100
@@ -720,7 +704,7 @@ def main(page: ft.Page) -> None:
                     eta=format_duration(progress.eta),
                 )
             )
-        render_status(" · ".join(parts), ft.Colors.BLUE_200)
+        render_status(" · ".join(parts), styles.PALETTE["primary"])
 
     def album_folder(tracks: list[Track], album: AlbumInfo) -> Path:
         """The folder a run wrote to, whether or not it had anything to write.
@@ -735,7 +719,7 @@ def main(page: ft.Page) -> None:
 
     def render_success(tracks: list[Track], album: AlbumInfo | None) -> None:
         progress_bar.value = 1
-        render_badge(t("badge_done"), ft.Colors.GREEN_400)
+        render_badge(t("badge_done"), styles.PALETTE["ok"])
         if album is not None:
             destination = album_folder(tracks, album)
             if not tracks and present:
@@ -743,7 +727,7 @@ def main(page: ft.Page) -> None:
                 # missing, and "0 of 40 saved" would say the opposite.
                 render_status(
                     t("status_all_present", total=album.track_count, folder=destination),
-                    ft.Colors.GREEN_300,
+                    styles.PALETTE["ok"],
                 )
                 return
             key = "status_saved_album_present" if present else "status_saved_album"
@@ -755,7 +739,7 @@ def main(page: ft.Page) -> None:
                     folder=destination,
                     present=len(present),
                 ),
-                ft.Colors.GREEN_300,
+                styles.PALETTE["ok"],
             )
             return
         if not tracks:
@@ -764,7 +748,7 @@ def main(page: ft.Page) -> None:
             # before). Reaching for `tracks[0]` here raised IndexError inside
             # the event drain, which killed the run before it was accounted
             # for (`remember`) and left the pending list untouched.
-            render_status(t("status_present_track"), ft.Colors.GREEN_300)
+            render_status(t("status_present_track"), styles.PALETTE["ok"])
             return
         track = tracks[0]
         render_status(
@@ -774,7 +758,7 @@ def main(page: ft.Page) -> None:
                 format=track.format.upper(),
                 path=track.path,
             ),
-            ft.Colors.GREEN_300,
+            styles.PALETTE["ok"],
         )
 
     # Which result row is previewing, and its widgets: one sample at a time, so
@@ -818,7 +802,7 @@ def main(page: ft.Page) -> None:
             return
         if previewing.get("url") == result.url:
             stop_preview()
-            render_status(t("status_preview_stopped"), ft.Colors.GREY_300)
+            render_status(t("status_preview_stopped"), styles.PALETTE["text"])
             safe_update()
             return
         # The 30s of the song itself, fetched on press so the search never
@@ -827,7 +811,7 @@ def main(page: ft.Page) -> None:
         stop_preview()
         token = preview_generation
         row_state(result.url, PREVIEW_LOADING)
-        render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
+        render_status(t("status_preview_loading", title=result.title), styles.PALETTE["primary"])
         safe_update()
         run_task(_play_sample, result, token)
 
@@ -849,7 +833,7 @@ def main(page: ft.Page) -> None:
                 # status line, then say it plainly like a search does.
                 run_task(countdown_preview, result, token, wait)
             else:
-                render_status(t("status_preview_failed", message=message), ft.Colors.AMBER_300)
+                render_status(t("status_preview_failed", message=message), styles.PALETTE["warn"])
                 safe_update()
             return
         if token != preview_generation:
@@ -858,7 +842,7 @@ def main(page: ft.Page) -> None:
         stop_preview()
         previewing["url"] = result.url
         row_state(result.url, PREVIEW_PLAYING)
-        render_status(t("status_preview_playing", title=result.title), ft.Colors.BLUE_200)
+        render_status(t("status_preview_playing", title=result.title), styles.PALETTE["primary"])
         safe_update()
         await _play_preview(url)
 
@@ -872,12 +856,12 @@ def main(page: ft.Page) -> None:
         for remaining in range(wait, 0, -1):
             if token != preview_generation:
                 return
-            render_status(t("status_rate_limited", seconds=remaining), ft.Colors.AMBER_300)
+            render_status(t("status_rate_limited", seconds=remaining), styles.PALETTE["warn"])
             safe_update()
             await asyncio.sleep(1)
         if token != preview_generation:
             return
-        render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
+        render_status(t("status_preview_loading", title=result.title), styles.PALETTE["primary"])
         safe_update()
         run_task(_play_sample, result, token)
 
@@ -903,7 +887,7 @@ def main(page: ft.Page) -> None:
             await preview_player.play(position=None)
         except Exception as err:  # noqa: BLE001 - a sample must never break search
             stop_preview()
-            render_status(t("status_preview_failed", message=str(err)), ft.Colors.AMBER_300)
+            render_status(t("status_preview_failed", message=str(err)), styles.PALETTE["warn"])
             safe_update()
 
     def render_error(message: str) -> None:
@@ -911,19 +895,19 @@ def main(page: ft.Page) -> None:
         hide_busy()
         empty_text.visible = False
         sync_overlay()
-        render_badge(t("badge_failed"), ft.Colors.RED_400)
+        render_badge(t("badge_failed"), styles.PALETTE["error"])
         if wait := engine.retry_after(message):
             run_task(countdown_retry, wait)
         else:
-            render_status(t("status_error", message=message), ft.Colors.RED_300)
+            render_status(t("status_error", message=message), styles.PALETTE["error"])
 
     async def countdown_retry(wait: int) -> None:
         """A refusal says when to come back: count it down, then say it plainly."""
         for remaining in range(wait, 0, -1):
-            render_status(t("status_rate_limited", seconds=remaining), ft.Colors.AMBER_300)
+            render_status(t("status_rate_limited", seconds=remaining), styles.PALETTE["warn"])
             safe_update()
             await asyncio.sleep(1)
-        render_status(t("status_rate_limited_now"), ft.Colors.AMBER_300)
+        render_status(t("status_rate_limited_now"), styles.PALETTE["warn"])
         safe_update()
 
     # ------------------------------------------------------------------- dialogs
@@ -939,25 +923,25 @@ def main(page: ft.Page) -> None:
             run_task(choose_folder, True)
 
         page.show_dialog(
-            ft.AlertDialog(
-                modal=True,
-                title=ft.Text(t("first_run_title")),
-                content=ft.Column(
+            components.dialog(
+                ft.Text(t("first_run_title"), style=styles.title()),
+                ft.Column(
                     [
-                        ft.Text(t("first_run_body"), size=13),
+                        ft.Text(t("first_run_body"), style=styles.body(13)),
                         ft.Text(
                             t("first_run_suggested", path=default_dir),
-                            size=12,
-                            color=ft.Colors.GREY_400,
+                            style=styles.readout(12, styles.PALETTE["text_dim"]),
                         ),
                     ],
                     tight=True,
-                    spacing=8,
+                    spacing=styles.SPACE["sm"],
                     width=420,
                 ),
-                actions=[
-                    ft.TextButton(t("first_run_use_suggested"), on_click=use_default),
-                    ft.FilledButton(t("first_run_choose"), on_click=pick),
+                [
+                    components.ghost_button(
+                        t("first_run_use_suggested"), None, use_default
+                    ),
+                    components.primary_button(t("first_run_choose"), None, pick),
                 ],
             )
         )
@@ -1005,7 +989,7 @@ def main(page: ft.Page) -> None:
         if not root.is_dir() or not os.access(root, os.W_OK):
             # Android hands out content:// trees and read-only paths that look
             # like directories; a download there would fail halfway through.
-            render_status(t("status_folder_unusable", path=root), ft.Colors.AMBER_300)
+            render_status(t("status_folder_unusable", path=root), styles.PALETTE["warn"])
             return
         state.download_root = root
         state.save()
@@ -1014,7 +998,7 @@ def main(page: ft.Page) -> None:
 
     def ensure_folder() -> None:
         """Ask for a download folder when there is none yet."""
-        render_status(t("status_need_folder"), ft.Colors.AMBER_300)
+        render_status(t("status_need_folder"), styles.PALETTE["warn"])
         if desktop:
             show_first_run_dialog()
         else:
@@ -1039,15 +1023,14 @@ def main(page: ft.Page) -> None:
 
         preview = album.track_titles[:12]
         track_lines = [
-            ft.Text(f"{index:02d}.  {title}", size=12, color=ft.Colors.GREY_300)
+            ft.Text(f"{index:02d}.  {title}", style=styles.readout(12, styles.PALETTE["text"]))
             for index, title in enumerate(preview, start=1)
         ]
         if album.track_count > len(preview):
             track_lines.append(
                 ft.Text(
                     t("album_more", count=album.track_count - len(preview)),
-                    size=12,
-                    color=ft.Colors.GREY_500,
+                    style=styles.readout(12, styles.PALETTE["text_faint"]),
                 )
             )
 
@@ -1055,7 +1038,7 @@ def main(page: ft.Page) -> None:
             # Spotify's own list stops at 100 tracks: what was read is what the
             # download has to work with.
             track_lines.append(
-                ft.Text(t("album_truncated"), size=12, color=ft.Colors.AMBER_300)
+                ft.Text(t("album_truncated"), style=styles.readout(12, styles.PALETTE["warn"]))
             )
 
         def confirm(_) -> None:
@@ -1063,27 +1046,29 @@ def main(page: ft.Page) -> None:
             run_task(run_download, album.url, album)
 
         page.show_dialog(
-            ft.AlertDialog(
-                modal=True,
-                title=ft.Text(album.title),
-                content=ft.Column(
+            components.dialog(
+                ft.Text(album.title, style=styles.title()),
+                ft.Column(
                     [
-                        ft.Text("  ·  ".join(details), size=12, color=ft.Colors.BLUE_200),
                         ft.Text(
-                            t("album_folder", path=target), size=12, color=ft.Colors.GREY_400
+                            "  ·  ".join(details),
+                            style=styles.readout(12, styles.PALETTE["primary"]),
                         ),
-                        ft.Divider(),
+                        ft.Text(
+                            t("album_folder", path=target),
+                            style=styles.readout(12, styles.PALETTE["text_dim"]),
+                        ),
+                        components.divider(),
                         *track_lines,
                     ],
                     tight=True,
-                    spacing=6,
+                    spacing=styles.SPACE["sm"],
                     width=520,
+                    scroll=ft.ScrollMode.AUTO,
                 ),
-                actions=[
-                    ft.TextButton(t("cancel"), on_click=lambda _: page.pop_dialog()),
-                    ft.FilledButton(
-                        t("download_album"), icon=ft.Icons.DOWNLOAD, on_click=confirm
-                    ),
+                [
+                    components.ghost_button(t("cancel"), None, lambda _: page.pop_dialog()),
+                    components.primary_button(t("download_album"), ft.Icons.DOWNLOAD, confirm),
                 ],
             )
         )
@@ -1092,8 +1077,8 @@ def main(page: ft.Page) -> None:
 
     async def run_search(query: str) -> None:
         set_busy(True)
-        render_badge(t("badge_searching"), ft.Colors.BLUE_300)
-        render_status(t("status_searching", query=query), ft.Colors.BLUE_200)
+        render_badge(t("badge_searching"), styles.PALETTE["primary"])
+        render_status(t("status_searching", query=query), styles.PALETTE["primary"])
         show_busy(t("status_searching", query=query))
         try:
             results = await asyncio.to_thread(engine.search, query)
@@ -1102,7 +1087,7 @@ def main(page: ft.Page) -> None:
             render_error(str(err))
         else:
             render_results(results)
-            render_badge(t("badge_results"), ft.Colors.BLUE_300)
+            render_badge(t("badge_results"), styles.PALETTE["primary"])
         finally:
             set_busy(False)
             hide_busy()
@@ -1110,8 +1095,8 @@ def main(page: ft.Page) -> None:
 
     async def run_probe_then_confirm(result: SearchResult) -> None:
         set_busy(True)
-        render_badge(t("badge_reading"), ft.Colors.BLUE_300)
-        render_status(t("status_reading_album", title=result.title), ft.Colors.BLUE_200)
+        render_badge(t("badge_reading"), styles.PALETTE["primary"])
+        render_status(t("status_reading_album", title=result.title), styles.PALETTE["primary"])
         show_busy(t("status_reading_album", title=result.title))
         try:
             album = await asyncio.to_thread(engine.probe_album, result.url)
@@ -1120,8 +1105,8 @@ def main(page: ft.Page) -> None:
             render_error(str(err))
         else:
             hide_busy()
-            render_badge(t("badge_confirm"), ft.Colors.BLUE_300)
-            render_status(t("status_confirm"), ft.Colors.GREY_300)
+            render_badge(t("badge_confirm"), styles.PALETTE["primary"])
+            render_status(t("status_confirm"), styles.PALETTE["text"])
             show_album_dialog(album)
         finally:
             set_busy(False)
@@ -1145,7 +1130,7 @@ def main(page: ft.Page) -> None:
             render_error(t("status_need_folder"))
             return
 
-        render_badge(t("badge_downloading"), ft.Colors.BLUE_300)
+        render_badge(t("badge_downloading"), styles.PALETTE["primary"])
         progress_bar.visible = True
         skipped.clear()
         present.clear()
@@ -1279,11 +1264,11 @@ def main(page: ft.Page) -> None:
         lost work.
         """
         if not update.installable() and not is_mobile():
-            render_update(t("update_local", version=version.current()), ft.Colors.GREY_500)
+            render_update(t("update_local", version=version.current()), styles.PALETTE["text_faint"])
             safe_update()
             return
 
-        render_update(t("update_checking"), ft.Colors.GREY_300)
+        render_update(t("update_checking"), styles.PALETTE["text"])
         safe_update()
         token = state.update_token or update.env_token()
         try:
@@ -1293,9 +1278,9 @@ def main(page: ft.Page) -> None:
 
         if found.release is None:
             if found.needs_token:
-                render_update(t("update_private"), ft.Colors.AMBER_300)
+                render_update(t("update_private"), styles.PALETTE["warn"])
             elif found.error:
-                render_update(t("update_error", message=found.error), ft.Colors.AMBER_300)
+                render_update(t("update_error", message=found.error), styles.PALETTE["warn"])
             else:
                 render_update(t("update_current", version=version.current()))
             safe_update()
@@ -1304,7 +1289,7 @@ def main(page: ft.Page) -> None:
         release = found.release
         if not update.installable():
             render_update(
-                t("update_available_mobile", version=release.version), ft.Colors.BLUE_200
+                t("update_available_mobile", version=release.version), styles.PALETTE["primary"]
             )
             # The APK built for this phone's ABI, or the release page when the
             # release has none for it.
@@ -1315,7 +1300,7 @@ def main(page: ft.Page) -> None:
         while working:
             await asyncio.sleep(1)
 
-        render_update(t("update_found", version=release.version), ft.Colors.BLUE_200)
+        render_update(t("update_found", version=release.version), styles.PALETTE["primary"])
         safe_update()
         # The download runs in a thread and reports through the queue: nothing
         # but this coroutine touches a control.
@@ -1339,7 +1324,7 @@ def main(page: ft.Page) -> None:
                             done=format_bytes(written),
                             total=format_bytes(expected),
                         ),
-                        ft.Colors.BLUE_200,
+                        styles.PALETTE["primary"],
                     )
                     safe_update()
                 if worker.done():
@@ -1347,7 +1332,7 @@ def main(page: ft.Page) -> None:
                 await asyncio.sleep(POLL_INTERVAL)
             executable = worker.result()
         except Exception as err:  # noqa: BLE001 - report, keep running the old build
-            render_update(t("update_failed", message=str(err)), ft.Colors.RED_300)
+            render_update(t("update_failed", message=str(err)), styles.PALETTE["error"])
             safe_update()
             return
 
@@ -1358,11 +1343,11 @@ def main(page: ft.Page) -> None:
             # left to do is to ask for a restart.
             render_update(
                 t("update_restart_manual", version=release.version, message=err),
-                ft.Colors.AMBER_300,
+                styles.PALETTE["warn"],
             )
             safe_update()
             return
-        render_update(t("update_restarting", version=release.version), ft.Colors.GREEN_300)
+        render_update(t("update_restarting", version=release.version), styles.PALETTE["ok"])
         safe_update()
         try:
             await page.window.close()  # the instance just started takes it from here
@@ -1374,7 +1359,7 @@ def main(page: ft.Page) -> None:
         try:
             await url_launcher.launch_url(url)
         except Exception as err:  # noqa: BLE001 - a platform with no browser
-            render_update(t("update_failed", message=str(err)), ft.Colors.RED_300)
+            render_update(t("update_failed", message=str(err)), styles.PALETTE["error"])
             safe_update()
 
     def press_update(_) -> None:
@@ -1389,8 +1374,8 @@ def main(page: ft.Page) -> None:
     def start_search() -> None:
         query = (query_field.value or "").strip()
         if not query:
-            render_badge(t("badge_input"), ft.Colors.AMBER_400)
-            render_status(t("status_need_input"), ft.Colors.AMBER_300)
+            render_badge(t("badge_input"), styles.PALETTE["warn"])
+            render_status(t("status_need_input"), styles.PALETTE["warn"])
             return
         if state.download_root is None:
             ensure_folder()
@@ -1432,56 +1417,52 @@ def main(page: ft.Page) -> None:
     # ---------------------------------------------------------------------- page
 
     render_folder()
-    folder_row: list[ft.Control] = [
-        ft.Icon(ft.Icons.FOLDER_OPEN, size=16, color=ft.Colors.GREY_400),
-        folder_text,
-        ft.TextButton(t("change_folder"), on_click=lambda _: run_task(choose_folder)),
-    ]
-    if desktop:
-        # One line, the desktop way: the folder on the left, the format on the right.
-        folder_row += [ft.Container(expand=True), format_dropdown]
-        settings_rows = [ft.Row(folder_row, vertical_alignment=ft.CrossAxisAlignment.CENTER)]
-    else:
-        # A phone has no room for both, so the format gets its own line and
-        # stretches across it, and the path takes the room the button leaves.
-        format_dropdown.width = None
-        settings_rows = [
-            ft.Row(folder_row, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            ft.Row([format_dropdown]),
-        ]
-
-    center_stack = ft.Stack(
-        [
-            results_list,
-            busy_overlay,
-        ],
-        expand=True,
+    change_folder = components.change_folder_button(
+        t("change_folder"), lambda _: run_task(choose_folder)
     )
+    settings_bar = components.settings_bar(
+        [components.folder_icon_badge(), folder_text, change_folder],
+        folder_text,
+        format_dropdown,
+    )
+
+    # The mark is taken back by `on_resize` when the window is too narrow for it.
+    mark = components.app_mark()
+    header = components.header(
+        mark,
+        ft.Text(config.APP_NAME.upper(), style=styles.display(), no_wrap=True),
+        status_badge,
+    )
+
+    def on_resize(event=None) -> None:
+        """What the window cannot show is dropped, widest first."""
+        # `page.media` carries insets and orientation in this Flet, not a size:
+        # the width comes from the resize event, and from the page before the
+        # client has sent one.
+        width = getattr(event, "width", None) or page.width or 0
+        mark.visible = not width or width >= COMPACT_WIDTH
+        safe_update()
+
+    page.on_resize = on_resize
+    # The shell's controls are the page's own children, as they were: the only
+    # expanding one is the results panel, and nothing between it and the window
+    # decides its height. The backdrop is a page decoration and a layer inside
+    # that panel for the same reason. The client reserves the platform's safe
+    # areas itself (`PageMediaData.view_padding`), so a SafeArea would double it.
+    page.decoration = styles.wash()
     page.add(
-        ft.Row(
-            [
-                ft.Icon(ft.Icons.GRAPHIC_EQ, size=28),
-                ft.Text(config.APP_NAME, size=22, weight=ft.FontWeight.BOLD),
-                ft.Container(expand=True),
-                status_badge,
-            ],
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-        *settings_rows,
-        ft.Row([query_field, search_btn], spacing=12),
-        ft.Divider(),
-        center_stack,
+        header,
+        settings_bar,
+        components.search_bar(query_field, search_btn),
+        components.divider(),
+        components.results_panel(results_list, busy_overlay),
         progress_bar,
-        status_text,
+        components.status_line(status_text),
         detail_text,
-        ft.Row(
-            [version_label, update_button, retry_button],
-            wrap=True,
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
+        components.footer([version_label, update_button, retry_button]),
         update_text,
     )
+    on_resize()
     refresh_query_state()
 
     if state.download_root is None:
@@ -1492,7 +1473,7 @@ def main(page: ft.Page) -> None:
             run_task(use_system_folder)
 
     if UPDATED_TO:
-        render_update(t("updated_to", version=UPDATED_TO), ft.Colors.GREEN_300)
+        render_update(t("updated_to", version=UPDATED_TO), styles.PALETTE["ok"])
 
     render_pending()
     if pending.due(pending.load()) and state.download_root is not None:
@@ -1534,10 +1515,10 @@ def _startup_failure(page: ft.Page, err: Exception) -> None:
         pass
     try:
         page.show_dialog(
-            ft.AlertDialog(
-                modal=True,
-                title=ft.Text(title),
-                content=ft.Text(message, selectable=True),
+            components.dialog(
+                ft.Text(title, style=styles.title(styles.PALETTE["error"])),
+                ft.Text(message, style=styles.readout(12), selectable=True),
+                [],
             )
         )
     except Exception:  # noqa: BLE001 - the dialog is a nicety, the window is not
