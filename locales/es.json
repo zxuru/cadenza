@@ -48,9 +48,11 @@
   "status_saved_album": "Guardados {count} de {total} temas en {folder}",
   "status_saved_album_present": "Guardados {count} de {total} temas en {folder} · {present} ya estaban",
   "status_all_present": "Nada que bajar: los {total} temas ya están en {folder}",
+  "status_present_track": "Nada que bajar: el tema ya está en la carpeta",
   "status_skipped": "{count} sin descargar · p. ej. «{title}»: {reason}",
   "status_noted": "{count} merecen un vistazo · p. ej. «{title}»: {note}",
   "status_error": "Error: {message}",
+  "startup_failed": "Cadenza no pudo iniciarse",
   "subtitle_album": "Álbum",
   "subtitle_spotify": "Spotify",
   "subtitle_tracks": {

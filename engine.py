@@ -54,6 +54,10 @@ MATCH_LOOKUPS = 6
 MATCH_WORKERS = 4
 MATCH_STAGGER = 0.4  # seconds between the matching requests
 MATCH_RETRY_PAUSE = 3.0  # seconds between the retries of one pass
+# Refusals in a row that end the retry pass: a YouTube that refuses one request
+# after another is not going to serve the rest of them either, and asking again
+# only makes the wall longer.
+MATCH_RETRY_GIVE_UP = 3
 # Files already in a folder are measured before the folder fetches anything,
 # and one measurement is one file played all the way through: they are
 # independent of each other, so they are played together. Four at a time hides
@@ -61,6 +65,9 @@ MATCH_RETRY_PAUSE = 3.0  # seconds between the retries of one pass
 VERIFY_WORKERS = 4
 REFUSED = "YouTube refused the request (rate limit or sign-in check)"
 NO_MATCH = "no match on YouTube"
+# A track of a playlist that came back with nothing at all: not a track left
+# short, a track nothing was produced for (see `_missing_entries`).
+MISSING_AUDIO = "no audio file was produced"
 # A lookup YouTube refused because this address asked too often, in any of the
 # shapes yt-dlp reports it: the request itself went through, what came back is
 # a refusal - 403, "Forbidden", or the sign-in wall - rather than a miss.
@@ -91,6 +98,21 @@ MIN_SHORT_TOLERANCE = 1.0  # the floor: YouTube counts its seconds whole
 SHORT_TOLERANCE_SHARE = 0.02  # two percent of the track
 # Seconds one playback check may spend on a file before it gives up on it.
 DECODE_TIMEOUT = 120
+# What a decoder says when it could not open the file rather than finding
+# nothing to play in it: the file was held by another program, the machine was
+# out of descriptors or memory, or this build has no codec for it. None of
+# those is about the track, so none of them may delete one (`_could_not_read`).
+_UNREADABLE = (
+    "Permission denied",
+    "Access is denied",
+    "Device or resource busy",
+    "Resource temporarily unavailable",
+    "Too many open files",
+    "Input/output error",
+    "Cannot allocate memory",
+    "Out of memory",
+    "not found for input stream",
+)
 # Warnings one yt-dlp call keeps around to show with a failure (`_YtDlpLog`).
 KEPT_WARNINGS = 10
 # How far an *existing* file may be from the length Spotify gives the track
@@ -497,9 +519,20 @@ def download(
 
     tracks: list[Track] = []
     rejected = ""
+    produced: set[int] = set()
     for entry in _entries(info):
+        position = _position(entry)
+        if position is not None:
+            produced.add(position)
         track = _track_of(entry, target_format)
         if track is None:
+            # An entry that came back without a file is a track the run did not
+            # get, and naming it is what puts it on the retry list: a count
+            # alone ("19 of 20") leaves the user with no track and no reason.
+            # An entry with no position is not one track of a playlist, and a
+            # run that produced nothing at all is said at the end of this.
+            if position is not None:
+                _reject(progress_callback, entry, MISSING_AUDIO)
             continue
         # A file is only a track if it plays for as long as the upload it came
         # from says it does: what is short goes, is said out loud, and the retry
@@ -515,6 +548,11 @@ def download(
         _say_check(progress_callback, playing, entry.get("title"))
         _enrich(entry, track, album, progress_callback)
         tracks.append(track)
+    for entry in _missing_entries(info, produced):
+        # Entries yt-dlp handed back as nothing at all: the download it was
+        # asked to ignore the failure of (`ignoreerrors: "only_download"`)
+        # leaves no title behind, only the position it never filled.
+        _reject(progress_callback, entry, MISSING_AUDIO)
     if not tracks:
         raise DownloadError(rejected or f'No audio file was produced for "{target}".')
     return tracks
@@ -1107,11 +1145,32 @@ def _decoded(ffmpeg: str, path: Path) -> _Playing:
     said = (process.stdout or "") + (process.stderr or "")
     rates, counts = _AUDIO_RATE.findall(said), _AUDIO_SAMPLES.findall(said)
     if not (rates and counts):
-        # ffmpeg ran and got no audio out of the file at all: nothing of it
-        # plays. A run that ended cleanly without a count says nothing.
-        return _Playing(0.0 if process.returncode else None)
-    seconds = int(counts[-1]) / int(rates[0])
+        # ffmpeg got no audio out of the file: nothing of it plays, which is
+        # zero seconds and a file refused (`_short_of`). A file that is not
+        # there is the same answer - nothing plays of it. What is *not* the
+        # same answer is a decoder that could not read the file at all: that
+        # says nothing about the track, and a doubt never deletes one.
+        if not path.exists() or not _could_not_read(said):
+            return _Playing(0.0)
+        return _Playing(None)
+    rate = int(rates[0])
+    if not rate:
+        return _Playing(None)  # a rate of nothing: the count above means nothing
+    seconds = int(counts[-1]) / rate
     return _Playing(seconds, _silences(said, seconds))
+
+
+def _could_not_read(said: str) -> bool:
+    """True when a decoder's complaint says nothing about whether the track is whole.
+
+    The file was there and could not be opened - another program held it, the
+    system was out of descriptors or memory, this ffmpeg build has no codec for
+    it - and every one of those is a doubt about the check rather than a verdict
+    on the file. Everything else a decoder says about a file it did open ("Invalid
+    data found", a missing `moov` atom, a stream that ends early) is about the
+    file itself, and those are refused as they always were.
+    """
+    return any(marker in said for marker in _UNREADABLE)
 
 
 def _silences(said: str, seconds: float) -> tuple[tuple[float, float], ...]:
@@ -1350,6 +1409,38 @@ def _entries(info: dict) -> list[dict]:
     return [info]
 
 
+def _position(entry: dict) -> int | None:
+    """Where one entry sits in its playlist, or None when it is not one."""
+    position = entry.get("playlist_index")
+    if isinstance(position, bool) or not isinstance(position, int) or position < 1:
+        return None
+    return position
+
+
+def _missing_entries(info: dict, produced: set[int]) -> list[dict]:
+    """The playlist slots that came back with nothing, as entries to report.
+
+    yt-dlp is asked to ignore a per-entry download failure
+    (`ignoreerrors: "only_download"`), and what it hands back for one is not an
+    entry but a `None` in its place - which `_entries` drops, taking the title
+    with it. The positions survive in the entries that did come back, so what
+    is missing is the gap between them. A slot is only named when the list came
+    back whole (`len(raw) == total`): a shorter list means entries were dropped
+    before any of this, and naming those would be a guess.
+    """
+    if info.get("_type") != "playlist":
+        return []
+    raw = list(info.get("entries") or [])
+    total = info.get("playlist_count") or len(raw)
+    if not isinstance(total, int) or len(raw) != total:
+        return []
+    return [
+        {"playlist_index": position}
+        for position in range(1, total + 1)
+        if position not in produced
+    ]
+
+
 def _convert_downloads(info: dict, target_format: str, album: AlbumInfo | None) -> None:
     """Re-encode what yt-dlp saved without ffmpeg, then label it.
 
@@ -1377,7 +1468,14 @@ def _convert_downloads(info: dict, target_format: str, album: AlbumInfo | None) 
             transcode.convert(source, target_format, staging)
             thumbnail = _thumbnail_of(source)
             cover = transcode.cover_from(thumbnail) if thumbnail is not None else None
-            written = metadata.write_tags(staging, _video_tags(entry, album), cover)
+            written = metadata.write_tags(
+                staging,
+                _video_tags(entry, album),
+                cover,
+                # The staging name ends in `.part`, which no tag writer knows:
+                # the container is the one the file is about to take.
+                suffix=destination.suffix,
+            )
             staging.replace(destination)
         except BaseException:
             staging.unlink(missing_ok=True)  # never half a track under a name

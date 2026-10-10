@@ -92,6 +92,11 @@ class Settings:
             raw = json.loads(settings.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return settings
+        if not isinstance(raw, dict):
+            # A file holding a list, a string or a number is not settings, and
+            # reaching into it would end the run before there is a window to
+            # say so (`main.main` builds the UI around this call).
+            return settings
         root = raw.get("download_root")
         if isinstance(root, str) and root.strip():
             settings.download_root = Path(root).expanduser()
@@ -107,11 +112,21 @@ class Settings:
         return settings
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        """Write the settings; a file that cannot be written is not a failure.
+
+        The directory may be read-only, root-owned or gone (a config home on a
+        stick that was pulled), and the one caller runs while the window is
+        still being built: raising there leaves the user with an app that never
+        appears. What is lost is a preference, exactly as `pending.save` says.
+        """
         payload = {
             "download_root": str(self.download_root) if self.download_root else None,
             "format": self.format,
             "update_token": self.update_token,
             "cookies_from_browser": self.cookies_from_browser,
         }
-        self.path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        except OSError:
+            pass

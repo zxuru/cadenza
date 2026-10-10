@@ -31,8 +31,9 @@ def made(tmp_path, monkeypatch):
         state["converted"] = Path(destination)
         Path(destination).write_bytes(b"converted audio")
 
-    def fake_tags(path, tags, cover) -> bool:
+    def fake_tags(path, tags, cover, **kwargs) -> bool:
         state["tagged"] = Path(path)
+        state["suffix"] = kwargs.get("suffix")
         Path(path).write_bytes(Path(path).read_bytes() + b"+tags")
         return True
 
@@ -50,6 +51,7 @@ def test_it_publishes_in_one_step(made):
 
     assert state["converted"] == root / "Song.flac.part", "the audio went to the name"
     assert state["tagged"] == root / "Song.flac.part", "the tags went to the name"
+    assert state["suffix"] == ".flac", "the writer was told which container it is"
     assert (root / "Song.flac").read_bytes() == b"converted audio+tags"
     assert not (root / "Song.flac.part").exists(), "the staging file was left behind"
     assert not (root / "Song.webm").exists(), "the source outlives the track"
@@ -61,7 +63,7 @@ def test_it_publishes_in_one_step(made):
 def test_a_tag_write_that_fails_publishes_nothing(made, monkeypatch):
     root, entry, _state = made
 
-    def angry_tags(path, tags, cover) -> bool:
+    def angry_tags(path, tags, cover, **kwargs) -> bool:
         Path(path).write_bytes(b"half tagged")
         raise RuntimeError("tagging died")
 

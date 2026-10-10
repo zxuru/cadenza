@@ -113,15 +113,24 @@ def apply(path: Path, match: Match, keep: Mapping[str, str] | None = None) -> bo
     return write_tags(path, _tags(match) | dict(keep or {}), match.cover)
 
 
-def write_tags(path: Path, tags: Mapping[str, str], cover: bytes | None = None) -> bool:
+def write_tags(
+    path: Path,
+    tags: Mapping[str, str],
+    cover: bytes | None = None,
+    suffix: str | None = None,
+) -> bool:
     """Write plain tags into the audio file at `path`; True when they went in.
 
     The write `apply` ends in, and the one a build without ffmpeg needs for the
     tags a video carries: nothing else would put them in the file there. A file
     whose container cannot hold a picture, or that nothing here knows how to
     tag, is left alone.
+
+    `suffix` names the container `path` is about to become, for the one caller
+    that writes onto a staging name (`Song.flac.part`) no writer knows: without
+    it that write would be skipped, tags and all.
     """
-    writer = _WRITERS.get(path.suffix.lower())
+    writer = _WRITERS.get((suffix or path.suffix).lower())
     if writer is None:
         return False
     try:

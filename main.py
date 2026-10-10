@@ -749,6 +749,14 @@ def main(page: ft.Page) -> None:
                 ft.Colors.GREEN_300,
             )
             return
+        if not tracks:
+            # A run with nothing to fetch: the track is already where the
+            # download would put it (a Spotify link of one track, fetched
+            # before). Reaching for `tracks[0]` here raised IndexError inside
+            # the event drain, which killed the run before it was accounted
+            # for (`remember`) and left the pending list untouched.
+            render_status(t("status_present_track"), ft.Colors.GREEN_300)
+            return
         track = tracks[0]
         render_status(
             t(
@@ -763,6 +771,11 @@ def main(page: ft.Page) -> None:
     # Which result row is previewing, and its widgets: one sample at a time, so
     # starting one stops the other and the old row goes back to play.
     previewing: dict[str, str] = {}
+    # Bumped every time the preview is stopped or switched. A fetch or a
+    # countdown carries the number it started under, and one that no longer
+    # matches is a preview the user has already left: it must not play over
+    # what replaced it, and it must not write the status line either.
+    preview_generation = 0
     play_buttons: dict[str, ft.IconButton] = {}
     preview_spinners: dict[str, ft.ProgressRing] = {}
 
@@ -774,7 +787,10 @@ def main(page: ft.Page) -> None:
         )
 
     def stop_preview() -> None:
-        """Silence the shared player and reset every row icon to play."""
+        """Silence the shared player, reset every row icon to play, and retire
+        every fetch and countdown still in flight."""
+        nonlocal preview_generation
+        preview_generation += 1
         if previewing:
             previewing.clear()
             if preview_player is not None:
@@ -800,12 +816,13 @@ def main(page: ft.Page) -> None:
         # waits for it. A database sample is instant when one matched; the
         # video's own audio is cut to 30s otherwise.
         stop_preview()
+        token = preview_generation
         row_state(result.url, PREVIEW_LOADING)
         render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
         safe_update()
-        page.run_task(_play_sample, result)
+        page.run_task(_play_sample, result, token)
 
-    async def _play_sample(result: SearchResult) -> None:
+    async def _play_sample(result: SearchResult, token: int) -> None:
         try:
             # Always the track that was asked for, never a database's stand-in
             # for it: that URL is a different recording of the same song, and
@@ -814,18 +831,19 @@ def main(page: ft.Page) -> None:
             path = await asyncio.to_thread(engine.preview_sample, result.url)
             url = path.as_uri()
         except Exception as err:  # noqa: BLE001 - a sample must never break search
-            if previewing.get("url") != result.url:
-                row_state(result.url, PREVIEW_IDLE)
-                message = str(err)
-                if wait := engine.retry_after(message):
-                    # A refusal, not a verdict: count the wait down on the
-                    # status line, then say it plainly like a search does.
-                    page.run_task(countdown_preview, result, wait)
-                else:
-                    render_status(t("status_preview_failed", message=message), ft.Colors.AMBER_300)
-                    safe_update()
+            if token != preview_generation:
+                return  # stopped or switched while fetching: not this row's turn
+            row_state(result.url, PREVIEW_IDLE)
+            message = str(err)
+            if wait := engine.retry_after(message):
+                # A refusal, not a verdict: count the wait down on the
+                # status line, then say it plainly like a search does.
+                page.run_task(countdown_preview, result, token, wait)
+            else:
+                render_status(t("status_preview_failed", message=message), ft.Colors.AMBER_300)
+                safe_update()
             return
-        if previewing.get("url") == result.url:
+        if token != preview_generation:
             # Stopped or switched while fetching: never play over the new one.
             return
         stop_preview()
@@ -835,15 +853,24 @@ def main(page: ft.Page) -> None:
         safe_update()
         await _play_preview(url)
 
-    async def countdown_preview(result: SearchResult, wait: int) -> None:
-        """A refused sample says when to come back: count it down, then retry."""
+    async def countdown_preview(result: SearchResult, token: int, wait: int) -> None:
+        """A refused sample says when to come back: count it down, then retry.
+
+        The count is dropped the moment the row is stopped or another one is
+        started: replaying it afterwards silenced what the user was listening
+        to and started a sample they had already put down.
+        """
         for remaining in range(wait, 0, -1):
+            if token != preview_generation:
+                return
             render_status(t("status_rate_limited", seconds=remaining), ft.Colors.AMBER_300)
             safe_update()
             await asyncio.sleep(1)
+        if token != preview_generation:
+            return
         render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
         safe_update()
-        page.run_task(_play_sample, result)
+        page.run_task(_play_sample, result, token)
 
     async def _play_preview(url: str) -> None:
         nonlocal preview_player
@@ -1380,9 +1407,15 @@ def main(page: ft.Page) -> None:
         """
         if not desktop:
             return
-        await page.window.wait_until_ready_to_show()
+        try:
+            await page.window.wait_until_ready_to_show()
+        except Exception:  # noqa: BLE001 - reveal it anyway: a window that never
+            pass  # comes up is the one failure the user cannot report
         page.window.visible = True
-        page.update()
+        try:
+            page.update()
+        except RuntimeError:
+            pass  # window closed before it was shown: nothing left to show
 
     # ---------------------------------------------------------------------- page
 
@@ -1459,6 +1492,51 @@ def main(page: ft.Page) -> None:
     page.run_task(reveal_window)
 
 
+def start(page: ft.Page) -> None:
+    """`ft.run` entry point: a startup failure must not hide the window.
+
+    The window is started hidden and only revealed once everything is laid out
+    (`main`), so anything that fails before that leaves a process nobody can
+    see and nothing that says why - a config directory that cannot be written,
+    a settings file holding something that is not settings. This catches it,
+    shows the window, and says what happened.
+    """
+    try:
+        main(page)
+    except Exception as err:  # noqa: BLE001 - report it, never hide it
+        _startup_failure(page, err)
+
+
+def _startup_failure(page: ft.Page, err: Exception) -> None:
+    """Show the window and say what stopped the app from starting."""
+    message = f"{err.__class__.__name__}: {err}"
+    try:
+        title = i18n.Translator()("startup_failed")
+    except Exception:  # noqa: BLE001 - even the translation is not worth hiding for
+        title = f"{config.APP_NAME} could not start"
+    try:
+        page.window.visible = True
+    except Exception:  # noqa: BLE001 - a page with no window of its own (phone, browser)
+        pass
+    try:
+        page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                title=ft.Text(title),
+                content=ft.Text(message, selectable=True),
+            )
+        )
+    except Exception:  # noqa: BLE001 - the dialog is a nicety, the window is not
+        try:
+            page.add(ft.Text(message, selectable=True))
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        page.update()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def pin_client_flavor() -> None:
     """Ask for the Flet desktop client this app ships: the `full` one.
 
@@ -1495,4 +1573,4 @@ if __name__ == "__main__":
     # The hidden-until-ready dance is for the desktop client; a bundle built by
     # `flet build` (Android) embeds the app and shows it itself.
     view = None if is_mobile() else ft.AppView.FLET_APP_HIDDEN
-    ft.run(main, view=view, assets_dir=bundle.assets_dir())
+    ft.run(start, view=view, assets_dir=bundle.assets_dir())
