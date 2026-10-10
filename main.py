@@ -9,6 +9,7 @@ import asyncio
 import os
 import queue
 import re
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -114,10 +115,24 @@ def apply_preview_state(
         spinner.visible = state == PREVIEW_LOADING
 
 
+def reveal_folder(path: Path) -> None:
+    """Ask the desktop to show `path` in its file manager.
+
+    One launcher per platform. A platform with none - a phone, a stripped
+    container - has no such command, and `Popen` raises OSError for it: the
+    caller turns that into a line on the status instead of a traceback inside a
+    click handler.
+    """
+    if sys.platform == "win32":
+        os.startfile(path)  # type: ignore[attr-defined] - Windows only, spelled so
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _read_tags(path: Path) -> dict[str, str]:
     """Read container tags back with the same ffmpeg the engine uses."""
-    import subprocess
-
     ffmpeg = engine.find_ffmpeg()
     if ffmpeg is None:
         return {}
@@ -139,8 +154,6 @@ def _read_tags(path: Path) -> dict[str, str]:
 
 def _read_art(path: Path) -> tuple[str, int, int] | None:
     """Kind and pixel size of the cover picture in `path`, or None when there is none."""
-    import subprocess
-
     ffmpeg = engine.find_ffmpeg()
     if ffmpeg is None:
         return None
@@ -964,6 +977,24 @@ def main(page: ft.Page) -> None:
             page.pop_dialog()
         apply_folder(Path(chosen))
 
+    def open_download_folder() -> None:
+        """The folder chip: show the download folder in the file manager.
+
+        Before a folder is chosen there is nothing to show, so the click asks
+        for one - the same thing the first run does, and the only useful answer
+        at that point.
+        """
+        if state.download_root is None:
+            run_task(choose_folder)
+            return
+        try:
+            reveal_folder(Path(state.download_root))
+        except OSError as err:
+            # No file manager on this platform, or none that answers: say so
+            # where every other failure is said, and leave the folder alone.
+            render_status(t("status_error", message=err), styles.PALETTE["error"])
+            safe_update()
+
     async def use_system_folder() -> None:
         """First run on a phone: download where the system lets the app write.
 
@@ -1420,11 +1451,15 @@ def main(page: ft.Page) -> None:
     change_folder = components.change_folder_button(
         t("change_folder"), lambda _: run_task(choose_folder)
     )
-    settings_bar = components.settings_bar(
-        [components.folder_icon_badge(), folder_text, change_folder],
+    # A phone has no file manager to hand the path to, so the chip is inert
+    # there and only says where the music goes.
+    folder_chip = components.folder_chip(
+        components.folder_icon_badge(),
         folder_text,
-        format_dropdown,
+        open_download_folder if desktop else None,
+        t("tooltip_open_folder"),
     )
+    settings_bar = components.settings_bar(folder_chip, change_folder, format_dropdown)
 
     # The mark is taken back by `on_resize` when the window is too narrow for it.
     mark = components.app_mark()

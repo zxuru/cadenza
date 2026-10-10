@@ -113,11 +113,9 @@ def status_chip(badge: ft.Text) -> ft.Container:
 
 
 def settings_bar(
-    folder_controls: list[ft.Control],
-    folder_text: ft.Text,
+    folder_chip: ft.Control,
+    change_folder: ft.Control,
     format_dropdown: ft.Dropdown,
-    *,
-    on_change_folder: Callable | None = None,
 ) -> ft.Control:
     """The folder and the format, one line when there is room for two.
 
@@ -126,8 +124,8 @@ def settings_bar(
     """
     folder_panel = ft.Container(
         content=ft.Row(
-            folder_controls,
-            spacing=S["sm"],
+            [folder_chip, change_folder],
+            spacing=S["xs"],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
         padding=ft.Padding.symmetric(vertical=S["xs"], horizontal=S["md"]),
@@ -145,15 +143,63 @@ def settings_bar(
         col={"xs": 12, "md": 4},
         alignment=ft.Alignment(0, 0),
     )
-    # The path ellipsizes instead of pushing the button off a narrow screen.
-    folder_text.max_lines = 1
-    folder_text.overflow = ft.TextOverflow.ELLIPSIS
-    folder_text.expand = True
     return ft.ResponsiveRow(
         [folder_panel, format_panel],
         spacing=S["md"],
         run_spacing=S["sm"],
         vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+
+def _hovering(event: ft.ControlEvent) -> bool:
+    """Flet 1.x sends the hover flag as a bool, older clients as "true"/"false"."""
+    return event.data is True or str(event.data).lower() == "true"
+
+
+def _tint_on_hover(event: ft.ControlEvent, color: str) -> None:
+    """Light a control up under the pointer; a detached one is left alone."""
+    event.control.bgcolor = color if _hovering(event) else None  # type: ignore[attr-defined]
+    try:
+        event.control.update()
+    except RuntimeError:
+        pass  # the window closed under the pointer
+
+
+def folder_chip(
+    icon: ft.Control,
+    path_text: ft.Text,
+    on_open: Callable | None = None,
+    tooltip: str = "",
+) -> ft.Container:
+    """The download folder, as a chip that opens it in the file manager.
+
+    `on_open` is None where there is no file manager to hand the path to: the
+    chip then shows the path and does nothing.
+    """
+    # The path ellipsizes instead of pushing the button off a narrow screen.
+    path_text.max_lines = 1
+    path_text.overflow = ft.TextOverflow.ELLIPSIS
+    path_text.expand = True
+    row = ft.Row(
+        [icon, path_text],
+        spacing=S["sm"],
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        expand=True,
+    )
+    padding = ft.Padding.symmetric(vertical=S["xs"], horizontal=S["sm"])
+    if on_open is None:
+        return ft.Container(content=row, expand=True, padding=padding)
+    return ft.Container(
+        content=row,
+        expand=True,
+        padding=padding,
+        border_radius=R["control"],
+        tooltip=tooltip,
+        ink=True,
+        ink_color=tint(P["primary"], 0.10),
+        on_click=lambda _: on_open(),
+        on_hover=lambda event: _tint_on_hover(event, tint(P["primary"], 0.10)),
+        animate=ANIM,
     )
 
 
