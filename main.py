@@ -25,6 +25,7 @@ except ImportError:  # preview player is optional: rows then play nothing
 import bundle
 import components
 import engine
+import errors
 import i18n
 import logs
 import pending
@@ -660,13 +661,15 @@ def main(page: ft.Page) -> None:
                 present.append(progress)
                 return
             # Which tracks were left out, and why. Kept after the download ends:
-            # "saved 21 of 40" is only half an answer without this.
+            # "saved 21 of 40" is only half an answer without this. The reason
+            # is what a tool wrote about the track, so it is shown as a code
+            # and a sentence; the raw text stays in `pending.json`.
             skipped.append(progress)
             detail_text.value = t(
                 "status_skipped",
                 count=len(skipped),
                 title=progress.title or "?",
-                reason=progress.note,
+                reason=errors.describe(progress.note).line(t),
             )
             detail_text.visible = True
             return
@@ -905,16 +908,35 @@ def main(page: ft.Page) -> None:
             await preview_player.play(position=None)
         except Exception as err:  # noqa: BLE001 - a sample must never break search
             stop_preview()
-            render_status(t("status_preview_failed", message=str(err)), styles.PALETTE["warn"])
+            render_status(
+                t(
+                    "status_preview_failed",
+                    message=errors.describe(err).line(t),
+                ),
+                styles.PALETTE["warn"],
+            )
             safe_update()
 
-    def render_error(message: str) -> None:
+    def render_error(message: str, *, tool: bool = False) -> None:
+        """Say a failure, in one line: what it was, and what it means.
+
+        `tool` is for a message a tool wrote - yt-dlp, ffmpeg, the file system:
+        it is reduced to a code and a sentence (`errors.describe`) instead of
+        being shown as it came. What the app wrote itself is already meant for
+        the user, and is shown as it is.
+
+        The raw message is what `retry_after` reads: a refusal is recognised by
+        the words yt-dlp used, not by the sentence this renders.
+        """
+        wait = engine.retry_after(message)
+        if tool:
+            message = errors.describe(message).line(t)
         progress_bar.value = 0
         hide_busy()
         empty_text.visible = False
         sync_overlay()
         render_badge(t("badge_failed"), styles.PALETTE["error"])
-        if wait := engine.retry_after(message):
+        if wait:
             run_task(countdown_retry, wait)
         else:
             render_status(t("status_error", message=message), styles.PALETTE["error"])
@@ -997,7 +1019,10 @@ def main(page: ft.Page) -> None:
         except OSError as err:
             # No file manager on this platform, or none that answers: say so
             # where every other failure is said, and leave the folder alone.
-            render_status(t("status_error", message=err), styles.PALETTE["error"])
+            render_status(
+                t("status_error", message=errors.describe(err).line(t)),
+                styles.PALETTE["error"],
+            )
             safe_update()
 
     async def use_system_folder() -> None:
@@ -1120,7 +1145,7 @@ def main(page: ft.Page) -> None:
             results = await asyncio.to_thread(engine.search, query)
         except Exception as err:  # noqa: BLE001 - surface any engine failure
             logs.failure("search", err)
-            render_error(str(err))
+            render_error(str(err), tool=True)
         else:
             render_results(results)
             render_badge(t("badge_results"), styles.PALETTE["primary"])
@@ -1138,7 +1163,7 @@ def main(page: ft.Page) -> None:
             album = await asyncio.to_thread(engine.probe_album, result.url)
         except Exception as err:  # noqa: BLE001
             logs.failure("album", err)
-            render_error(str(err))
+            render_error(str(err), tool=True)
         else:
             hide_busy()
             render_badge(t("badge_confirm"), styles.PALETTE["primary"])
@@ -1202,7 +1227,7 @@ def main(page: ft.Page) -> None:
             error = worker.exception()
             if error is not None:
                 logs.failure("download task", error)
-                render_error(str(error))
+                render_error(str(error), tool=True)
         finally:
             set_busy(False)
             progress_bar.visible = False
@@ -1223,7 +1248,7 @@ def main(page: ft.Page) -> None:
             elif kind == "done":
                 render_success(payload, album)
             else:
-                render_error(str(payload))
+                render_error(str(payload), tool=True)
             updated = True
         return updated
 
@@ -1284,7 +1309,7 @@ def main(page: ft.Page) -> None:
             try:
                 album = await asyncio.to_thread(engine.probe_album, url)
             except Exception as err:  # noqa: BLE001 - the link itself did not read
-                render_error(str(err))
+                render_error(str(err), tool=True)
                 return  # nothing was tried: the list stays exactly as it was
             await run_download(url, album, root=Path(root), target_format=target_format)
         render_pending()

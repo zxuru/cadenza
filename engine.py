@@ -27,6 +27,7 @@ import yt_dlp
 from yt_dlp.utils import DownloadError as YtDlpDownloadError
 
 import bundle
+import errors
 import logs
 import metadata
 import settings
@@ -1554,7 +1555,9 @@ class _YtDlpLog:
         self._keep(message)
 
     def _keep(self, message: str) -> None:
-        self.warnings.append(str(message).strip())
+        # Cleaned on the way in: what is kept is shown next to a failure, and
+        # yt-dlp writes it in terminal colour.
+        self.warnings.append(errors.clean(message))
         del self.warnings[:-KEPT_WARNINGS]
 
 
@@ -1565,10 +1568,16 @@ def _told(log: _YtDlpLog | None, message: str) -> str:
     that explains why a track came out wrong is shown to nobody - and the next
     run warns into the void again. One warning, the last, so the reason stays
     readable in the skip list and in `pending.json`.
+
+    When that last warning is the same sentence the failure already carried,
+    it is not repeated beside it: `errors.clean` collapses the copy.
     """
     if log is None or not log.warnings:
         return message
-    return f"{message} [{log.warnings[-1]}]" if message else log.warnings[-1]
+    warning = log.warnings[-1]
+    if not message or errors.clean(message) == warning:
+        return warning
+    return f"{message} [{warning}]"
 
 
 def _base_opts() -> dict:
@@ -2016,8 +2025,5 @@ def _sanitize_path(name: str) -> str:
 
 
 def _clean_message(error: Exception) -> str:
-    message = str(error).strip()
-    for prefix in ("ERROR: ", "error: "):
-        if message.startswith(prefix):
-            message = message[len(prefix) :]
-    return message
+    """The failure as a readable line; `errors.clean` owns what that means."""
+    return errors.clean(error)
