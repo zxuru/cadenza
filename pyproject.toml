@@ -74,3 +74,16 @@ addopts = '-m "not network"'
 markers = [
     "network: downloads real tracks; needs the network and YouTube's patience",
 ]
+
+# The linter CI runs, and the reason it runs one: `--selftest --no-download` is
+# the only check a build used to get, and it never touches most of the code, so
+# a name nothing defines reached a release (`MATCH_RETRY_GIVE_UP`, 1.0.15) and
+# crashed a download on the user's machine. The pyflakes rules are the ones
+# that catch a program that is wrong - an undefined name, an import nothing
+# uses - and none of them is a style preference, so there is nothing to argue
+# with when it fails.
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

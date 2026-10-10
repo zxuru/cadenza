@@ -131,8 +131,12 @@ install an APK from inside itself.
 | --- | --- |
 | Settings | `~/.config/Cadenza/config.json` (Linux), `%APPDATA%\Cadenza\config.json` (Windows), `~/Library/Application Support/Cadenza/config.json` (macOS), the app's own data directory on Android |
 | Tracks still missing | `pending.json`, next to the settings file above: what a playlist download could not fetch, until a retry gets it |
+| Log | `cadenza.log`, next to the settings file above: every failure that was answered on screen, with its traceback, and anything no `except` caught. One rotated file behind it, half a megabyte each |
 | Music | the folder chosen on the first run, one directory per album |
 | Flet client | `~/.flet/client/`, unpacked on the first launch |
+
+When something goes wrong, that log is the thing to ask for: the window says
+what failed, the file says where.
 
 ## How it works
 
@@ -175,6 +179,10 @@ staging, the retry list - makes its own audio with ffmpeg and never leaves a
 temporary directory, so a green run means the same thing everywhere.
 `pytest -m network` adds the ones that download real tracks, which is how the
 checks are proven against the pipeline that produces and keeps files.
+`ruff check .` is the linter, with the pyflakes rules only (see
+`[tool.ruff.lint]` in `pyproject.toml`): an undefined name, an import nothing
+uses - the mistakes a self-test that walks the engine never reaches. Both run
+in CI before anything is built, and a failure there stops the release.
 
 ## Building
 

@@ -237,10 +237,16 @@ verified by running it — see [Running it](#running-it).
 `.github/workflows/build.yml` builds every target on the platform that can
 build it, runs the self-test on each desktop artifact before uploading it, and
 then **publishes every artifact as a GitHub release** — there is no separate
-release step to run by hand:
+release step to run by hand. Nothing is built until the `checks` job has linted
+the tree (`ruff check .`) and run the tests (`pytest`): the self-test walks the
+engine in one direction and never runs the code around it, which is where an
+undefined name reached a release and crashed a download on a user's machine.
+The desktop builds and the APK both wait for that job, so a release that would
+fail it is never published:
 
 | Job | Runner | Release asset |
 | --- | --- | --- |
+| checks | `ubuntu-latest` | none: `ruff check .` and `pytest`, before any build starts |
 | desktop (linux-x86_64) | `ubuntu-latest` | `Cadenza-<version>-linux-x86_64.tar.gz` |
 | desktop (linux-arm64) | `ubuntu-24.04-arm` | `Cadenza-<version>-linux-arm64.tar.gz` |
 | desktop (windows-x86_64) | `windows-latest` | `Cadenza-<version>-windows-x86_64.exe` |

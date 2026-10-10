@@ -10,6 +10,7 @@ import os
 import queue
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import flet as ft
@@ -23,6 +24,7 @@ except ImportError:  # preview player is optional: rows then play nothing
 import bundle
 import engine
 import i18n
+import logs
 import pending
 import settings as config
 import update
@@ -164,8 +166,6 @@ def selftest(download: bool = True) -> int:
     the build. What is left is what any machine can check: ffmpeg, the
     JavaScript runtime, the extractors, and that the frozen app starts.
     """
-    import tempfile
-
     lines: list[str] = []
     ok = True
 
@@ -298,6 +298,15 @@ def _selftest_download(result: SearchResult, report: Callable[..., None]) -> Non
 
 def main(page: ft.Page) -> None:
     t = i18n.Translator()
+
+    def run_task(handler: Callable, *args: object) -> None:
+        """`page.run_task`, with a traceback left behind when the task fails.
+
+        A task that raises dies inside the event loop: the window keeps its
+        last state and nothing on disk says what happened. Every background
+        task in this window starts here for that reason - see `logs.watching`.
+        """
+        page.run_task(logs.watching(handler), *args)
 
     # A phone or a tablet has no window to size, reveal or give an icon: every
     # `page.window` property below is a desktop-client concern, and a browser
@@ -456,7 +465,7 @@ def main(page: ft.Page) -> None:
         "",
         icon=ft.Icons.REPLAY,
         visible=False,
-        on_click=lambda _: page.run_task(retry_pending),
+        on_click=lambda _: run_task(retry_pending),
     )
     # A phone installs nothing from inside the app: a newer release is offered
     # as its page, which the browser downloads the APK from - and the browser
@@ -523,7 +532,7 @@ def main(page: ft.Page) -> None:
         try:
             # Focus lives on the control (`TextField.focus` is a coroutine);
             # `Page` has no `focus`, so reaching for it crashed the app here.
-            page.run_task(query_field.focus)
+            run_task(query_field.focus)
         except RuntimeError:
             pass  # window closed mid-click: nothing left to focus
 
@@ -794,7 +803,7 @@ def main(page: ft.Page) -> None:
         if previewing:
             previewing.clear()
             if preview_player is not None:
-                page.run_task(_release_preview)
+                run_task(_release_preview)
         for url in play_buttons:
             row_state(url, PREVIEW_IDLE)
 
@@ -820,7 +829,7 @@ def main(page: ft.Page) -> None:
         row_state(result.url, PREVIEW_LOADING)
         render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
         safe_update()
-        page.run_task(_play_sample, result, token)
+        run_task(_play_sample, result, token)
 
     async def _play_sample(result: SearchResult, token: int) -> None:
         try:
@@ -838,7 +847,7 @@ def main(page: ft.Page) -> None:
             if wait := engine.retry_after(message):
                 # A refusal, not a verdict: count the wait down on the
                 # status line, then say it plainly like a search does.
-                page.run_task(countdown_preview, result, token, wait)
+                run_task(countdown_preview, result, token, wait)
             else:
                 render_status(t("status_preview_failed", message=message), ft.Colors.AMBER_300)
                 safe_update()
@@ -870,7 +879,7 @@ def main(page: ft.Page) -> None:
             return
         render_status(t("status_preview_loading", title=result.title), ft.Colors.BLUE_200)
         safe_update()
-        page.run_task(_play_sample, result, token)
+        run_task(_play_sample, result, token)
 
     async def _play_preview(url: str) -> None:
         nonlocal preview_player
@@ -904,7 +913,7 @@ def main(page: ft.Page) -> None:
         sync_overlay()
         render_badge(t("badge_failed"), ft.Colors.RED_400)
         if wait := engine.retry_after(message):
-            page.run_task(countdown_retry, wait)
+            run_task(countdown_retry, wait)
         else:
             render_status(t("status_error", message=message), ft.Colors.RED_300)
 
@@ -927,7 +936,7 @@ def main(page: ft.Page) -> None:
             apply_folder(default_dir)
 
         def pick(_) -> None:
-            page.run_task(choose_folder, True)
+            run_task(choose_folder, True)
 
         page.show_dialog(
             ft.AlertDialog(
@@ -1009,7 +1018,7 @@ def main(page: ft.Page) -> None:
         if desktop:
             show_first_run_dialog()
         else:
-            page.run_task(use_system_folder)
+            run_task(use_system_folder)
 
     def remember_format() -> None:
         state.format = format_dropdown.value or engine.DEFAULT_FORMAT
@@ -1051,7 +1060,7 @@ def main(page: ft.Page) -> None:
 
         def confirm(_) -> None:
             page.pop_dialog()
-            page.run_task(run_download, album.url, album)
+            run_task(run_download, album.url, album)
 
         page.show_dialog(
             ft.AlertDialog(
@@ -1089,6 +1098,7 @@ def main(page: ft.Page) -> None:
         try:
             results = await asyncio.to_thread(engine.search, query)
         except Exception as err:  # noqa: BLE001 - surface any engine failure
+            logs.failure("search", err)
             render_error(str(err))
         else:
             render_results(results)
@@ -1106,6 +1116,7 @@ def main(page: ft.Page) -> None:
         try:
             album = await asyncio.to_thread(engine.probe_album, result.url)
         except Exception as err:  # noqa: BLE001
+            logs.failure("album", err)
             render_error(str(err))
         else:
             hide_busy()
@@ -1169,6 +1180,7 @@ def main(page: ft.Page) -> None:
                 await asyncio.sleep(POLL_INTERVAL)
             error = worker.exception()
             if error is not None:
+                logs.failure("download task", error)
                 render_error(str(error))
         finally:
             set_busy(False)
@@ -1368,9 +1380,9 @@ def main(page: ft.Page) -> None:
     def press_update(_) -> None:
         """The one entry point: the button, and what it does next."""
         if page_url := release_page.get("page"):
-            page.run_task(open_release_page, page_url)
+            run_task(open_release_page, page_url)
         else:
-            page.run_task(check_for_update)
+            run_task(check_for_update)
 
     # ------------------------------------------------------------------ handlers
 
@@ -1384,16 +1396,16 @@ def main(page: ft.Page) -> None:
             ensure_folder()
             return
         stop_preview()
-        page.run_task(run_search, query)
+        run_task(run_search, query)
 
     def start_download(result: SearchResult) -> None:
         state.format = format_dropdown.value or engine.DEFAULT_FORMAT
         state.save()
         stop_preview()
         if result.kind == "album":
-            page.run_task(run_probe_then_confirm, result)
+            run_task(run_probe_then_confirm, result)
         else:
-            page.run_task(run_download, result.url, None)
+            run_task(run_download, result.url, None)
 
     async def reveal_window() -> None:
         """Show the window, at the size set above, once the client is up.
@@ -1423,7 +1435,7 @@ def main(page: ft.Page) -> None:
     folder_row: list[ft.Control] = [
         ft.Icon(ft.Icons.FOLDER_OPEN, size=16, color=ft.Colors.GREY_400),
         folder_text,
-        ft.TextButton(t("change_folder"), on_click=lambda _: page.run_task(choose_folder)),
+        ft.TextButton(t("change_folder"), on_click=lambda _: run_task(choose_folder)),
     ]
     if desktop:
         # One line, the desktop way: the folder on the left, the format on the right.
@@ -1477,7 +1489,7 @@ def main(page: ft.Page) -> None:
         if desktop:
             show_first_run_dialog()
         else:
-            page.run_task(use_system_folder)
+            run_task(use_system_folder)
 
     if UPDATED_TO:
         render_update(t("updated_to", version=UPDATED_TO), ft.Colors.GREEN_300)
@@ -1486,10 +1498,10 @@ def main(page: ft.Page) -> None:
     if pending.due(pending.load()) and state.download_root is not None:
         # Tracks an earlier run could not fetch: finishing them is what that
         # download was asked for, so nobody has to ask a second time.
-        page.run_task(retry_pending, True)
+        run_task(retry_pending, True)
 
     # Everything is laid out: show the window at its real size.
-    page.run_task(reveal_window)
+    run_task(reveal_window)
 
 
 def start(page: ft.Page) -> None:
@@ -1501,6 +1513,7 @@ def start(page: ft.Page) -> None:
     a settings file holding something that is not settings. This catches it,
     shows the window, and says what happened.
     """
+    logs.setup()
     try:
         main(page)
     except Exception as err:  # noqa: BLE001 - report it, never hide it
@@ -1509,6 +1522,7 @@ def start(page: ft.Page) -> None:
 
 def _startup_failure(page: ft.Page, err: Exception) -> None:
     """Show the window and say what stopped the app from starting."""
+    logs.failure("startup", err)
     message = f"{err.__class__.__name__}: {err}"
     try:
         title = i18n.Translator()("startup_failed")

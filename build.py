@@ -58,8 +58,15 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import version
+
+if TYPE_CHECKING:
+    # PyInstaller is a build-time dependency and only its reader is named here:
+    # the import below stays where it is used, inside the function that reads
+    # an archive.
+    from PyInstaller.archive.readers import CArchiveReader
 
 PROJECT_DIR = Path(__file__).resolve().parent
 ENTRY_POINT = PROJECT_DIR / "main.py"

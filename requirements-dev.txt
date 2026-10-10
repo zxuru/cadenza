@@ -1,4 +1,7 @@
-# Tools the tests need and the app does not: the runtime dependencies are in
-# requirements.txt, and `pip install -r requirements-dev.txt` is what makes
-# `pytest` run.
+# Tools the tests and CI need and the app does not: the runtime dependencies
+# are in requirements.txt, and `pip install -r requirements-dev.txt` is what
+# makes `pytest` and the `ruff check .` of the CI job run.
 pytest>=8
+# The linter: the pyflakes rules (see `[tool.ruff.lint]` in pyproject.toml) are
+# what catch a name nothing defines before a release is built around it.
+ruff>=0.17

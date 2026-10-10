@@ -257,7 +257,7 @@ class _FakePage:
         self.updates += 1
 
 
-def test_a_failure_while_the_window_is_hidden_is_shown(monkeypatch):
+def test_a_failure_while_the_window_is_hidden_is_shown(monkeypatch, config_home):
     def explode(page):
         raise PermissionError("the config directory is read-only")
 
@@ -269,9 +269,11 @@ def test_a_failure_while_the_window_is_hidden_is_shown(monkeypatch):
     assert page.window.visible is True
     assert page.dialogs, "the reason was not shown"
     assert page.updates == 1
+    # The window said what the user needs; the log kept what a report needs.
+    assert "startup failed" in (config_home / "cadenza.log").read_text(encoding="utf-8")
 
 
-def test_a_startup_that_works_is_left_alone(monkeypatch):
+def test_a_startup_that_works_is_left_alone(monkeypatch, config_home):
     seen: list = []
     monkeypatch.setattr(main, "main", seen.append)
     page = _FakePage()
@@ -281,3 +283,4 @@ def test_a_startup_that_works_is_left_alone(monkeypatch):
     assert seen == [page]
     assert page.dialogs == []
     assert page.updates == 0
+    assert not (config_home / "cadenza.log").exists(), "nothing was logged"

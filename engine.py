@@ -27,6 +27,7 @@ import yt_dlp
 from yt_dlp.utils import DownloadError as YtDlpDownloadError
 
 import bundle
+import logs
 import metadata
 import settings
 import spotify
@@ -1397,6 +1398,10 @@ def download_worker(
     try:
         tracks = download(target, target_format, dest_root, album, on_progress)
     except Exception as err:  # noqa: BLE001 - a worker thread must never die silently
+        # The caller says what the user needs on screen; the log keeps the
+        # traceback, which is the only thing that says where the download
+        # stopped and why.
+        logs.failure("download", err)
         on_error(_clean_message(err) or err.__class__.__name__)
     else:
         on_success(tracks)

@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 import engine
-import metadata
 
 FORMATS = ("flac", "m4a", "mp3", "wav")
 

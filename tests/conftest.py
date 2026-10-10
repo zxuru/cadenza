@@ -73,3 +73,19 @@ def cut():
         return shortened
 
     return take
+
+
+@pytest.fixture
+def config_home(tmp_path, monkeypatch):
+    """Point the app's config directory at the test's own `tmp_path`.
+
+    Settings, the retry list and the log all live there. A test that starts the
+    app must not leave a line of either in the real `~/.config`: that is the
+    user's directory, not the test's.
+    """
+    import settings
+
+    home = tmp_path / "config"
+    home.mkdir()
+    monkeypatch.setattr(settings, "config_dir", lambda: home)
+    return home
