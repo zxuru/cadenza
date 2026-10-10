@@ -16,6 +16,7 @@ from styles import (
     ANIM_MS,
     PALETTE as P,
     RADIUS as R,
+    SIZE as Z,
     SPACE as S,
     body,
     glow,
@@ -119,6 +120,10 @@ def settings_bar(
 ) -> ft.Control:
     """The folder and the format, one line when there is room for two.
 
+    Both panels are one token tall whatever they hold: the folder's chip and the
+    format's label are different heights on their own, and a row of two boxes
+    that disagree reads as a bug.
+
     A phone stacks them: the path takes the first row on its own and the format
     stretches across the second.
     """
@@ -128,7 +133,9 @@ def settings_bar(
             spacing=S["xs"],
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         ),
-        padding=ft.Padding.symmetric(vertical=S["xs"], horizontal=S["md"]),
+        height=Z["panel"],
+        padding=ft.Padding.symmetric(horizontal=S["sm"]),
+        alignment=ft.Alignment(-1, 0),
         border=hairline(alpha=0.16),
         border_radius=R["card"],
         bgcolor=tint(P["surface_2"], 0.55),
@@ -136,7 +143,8 @@ def settings_bar(
     )
     format_panel = ft.Container(
         content=format_dropdown,
-        padding=ft.Padding.symmetric(vertical=S["xs"], horizontal=S["sm"]),
+        height=Z["panel"],
+        padding=ft.Padding.symmetric(horizontal=S["sm"]),
         border=hairline(alpha=0.16),
         border_radius=R["card"],
         bgcolor=tint(P["surface_2"], 0.55),
@@ -259,6 +267,9 @@ def query_field(label_text: str, hint_text: str, suffix: ft.Control, on_change: 
         hint_text=hint_text,
         expand=True,
         autofocus=True,
+        # One height for the field and the button beside it: the label floats
+        # above the text, so the field is taller than a plain input by design.
+        height=Z["field"],
         # The label floats above the text: without this the value sits low, with
         # a tall empty gap above it.
         text_vertical_align=ft.VerticalAlignment.CENTER,
@@ -496,8 +507,14 @@ def primary_button(
     on_click: Callable | None,
     *,
     disabled: bool = False,
+    height: int | None = None,
 ) -> ft.FilledButton:
-    """The one filled button in the shell: the search, and the dialog confirms."""
+    """The one filled button in the shell: the search, and the dialog confirms.
+
+    `shadow_color` is a colour, not a shadow: this field feeds the Material
+    elevation's tint, and a `BoxShadow` there left the client laying the row out
+    to an unbounded height (the whole shell below the search row collapsed).
+    """
     foreground = {
         ft.ControlState.DEFAULT: P["primary"],
         ft.ControlState.HOVERED: P["text"],
@@ -509,6 +526,7 @@ def primary_button(
         icon=icon,
         on_click=on_click,
         disabled=disabled,
+        height=height or Z["button"],
         style=ft.ButtonStyle(
             bgcolor={
                 ft.ControlState.DEFAULT: tint(P["primary"], 0.12),
@@ -520,10 +538,10 @@ def primary_button(
             icon_color=foreground,
             side=ft.BorderSide(1, tint(P["primary"], 0.60)),
             shape=ft.RoundedRectangleBorder(radius=R["control"]),
-            elevation=0,
-            shadow_color=glow(P["primary"], blur=14, alpha=0.35),
+            elevation=2,
+            shadow_color=tint(P["primary"], 0.45),
             animation_duration=ANIM_MS,
-            padding=ft.Padding.symmetric(vertical=S["md"], horizontal=S["lg"]),
+            padding=ft.Padding.symmetric(vertical=S["sm"], horizontal=S["lg"]),
         ),
     )
 

@@ -406,7 +406,12 @@ def main(page: ft.Page) -> None:
         lambda _: start_search(),
     )
     search_btn = components.primary_button(
-        t("search"), ft.Icons.SEARCH, lambda _: start_search(), disabled=True
+        t("search"),
+        ft.Icons.SEARCH,
+        lambda _: start_search(),
+        disabled=True,
+        # Flush with the field beside it, which is a token tall.
+        height=styles.SIZE["field"],
     )
 
     results_list = components.results_list()
