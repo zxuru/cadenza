@@ -262,18 +262,23 @@ def format_dropdown(label_text: str, options: list[ft.DropdownOption], value: st
 
 
 def query_field(label_text: str, hint_text: str, suffix: ft.Control, on_change: Callable, on_submit: Callable) -> ft.TextField:
+    """The link box: one dense Material field, sized to what it asks for.
+
+    The decoration is the format dropdown's, token for token: that one is the
+    control in this shell that reads as centred, and a field with more padding
+    and a taller box put its value low, under a hole the label had left above
+    it. `text_vertical_align` is left alone because it is the client's default
+    already - setting it changed nothing, which is how the box was blamed.
+    """
     return ft.TextField(
         label=label_text,
         hint_text=hint_text,
         expand=True,
         autofocus=True,
-        # One height for the field and the button beside it: the label floats
-        # above the text, so the field is taller than a plain input by design.
+        # One height for the field and the button beside it.
         height=Z["field"],
-        # The label floats above the text: without this the value sits low, with
-        # a tall empty gap above it.
-        text_vertical_align=ft.VerticalAlignment.CENTER,
-        content_padding=ft.Padding.symmetric(vertical=14, horizontal=S["md"]),
+        dense=True,
+        content_padding=ft.Padding.symmetric(vertical=S["sm"], horizontal=S["md"]),
         suffix=suffix,
         on_change=on_change,
         on_submit=on_submit,

@@ -67,3 +67,24 @@ def test_the_input_and_the_button_are_sized_from_the_tokens():
     assert components.primary_button("go", None, None).height == styles.SIZE["button"]
     flush = components.primary_button("go", None, None, height=styles.SIZE["field"])
     assert flush.height == styles.SIZE["field"]
+
+
+def test_the_input_wears_the_decoration_the_dropdown_wears():
+    """The bug this guards: the field carried more padding than the dropdown
+    beside it and a taller box, and the client spent the room it was left with
+    above the value - the link sat low, under a hole its own label had made.
+    The dropdown is the control in this shell that reads as centred, so the two
+    are held to the same decoration."""
+    field = _field()
+    dropdown = components.format_dropdown("Format", [], None, None)
+
+    assert field.dense == dropdown.dense
+    assert field.content_padding == dropdown.content_padding
+
+
+def test_the_input_is_the_height_the_client_centres_a_value_in():
+    field = _field()
+    padding = field.content_padding
+
+    assert padding.top == padding.bottom, "a value off centre by its own padding"
+    assert field.height == styles.SIZE["field"] >= 48, "Material's own minimum"

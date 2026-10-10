@@ -90,10 +90,9 @@ def test_the_logger_keeps_the_console_quiet_while_it_keeps_the_messages():
         log.error("ERROR: something worse")
 
     assert console.getvalue() == "", "yt-dlp's chatter reached the console"
-    assert log.warnings == [
-        "WARNING: something YouTube did",
-        "ERROR: something worse",
-    ]
+    # Kept, and kept as a sentence: the level yt-dlp puts in front of its own
+    # lines is for its console, not for the bracket this ends up inside.
+    assert log.warnings == ["something YouTube did", "something worse"]
 
 
 def test_the_logger_keeps_only_the_last_few():

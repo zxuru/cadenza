@@ -42,9 +42,14 @@ SPACE: dict[str, int] = {"xs": 4, "sm": 8, "md": 12, "lg": 16, "xl": 24, "xxl": 
 
 # Fixed heights for the two things that sit next to each other: the settings
 # panels and the primary button. A row of controls whose heights differ reads as
-# a mistake, not as a hierarchy. `field` is the natural height of a filled
-# Material text field with its label floating.
-SIZE: dict[str, int] = {"panel": 64, "button": 44, "field": 60}
+# a mistake, not as a hierarchy.
+#
+# `field` is the height a dense labelled input asks for on its own, measured in
+# the running client: Material keeps its own controls at 48 (`kMinInteractive-
+# Dimension`), and a box taller than that leaves the client the leftover room,
+# which it puts *above* the value - the text then sits low in the field with a
+# hole under its label. 60 was that mistake; the text is centred at 48.
+SIZE: dict[str, int] = {"panel": 64, "button": 44, "field": 48}
 
 RADIUS: dict[str, int] = {"panel": 0, "card": 2, "control": 2, "chip": 10, "pill": 999}
 
