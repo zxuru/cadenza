@@ -2,22 +2,26 @@
 # desktop client `flet_desktop`: the frozen app launches it as a separate
 # process, and build.py stages its archive into the executable. `flet_web` is
 # deliberately not asked for - it is only used by the browser view.
-flet[desktop]>=1.0,<2
+# Floor rather than pin: 1.0.5 is the first 1.0.x that carries the fixes of the
+# October 2026 advisories, and the range still takes the next patch.
+flet[desktop]>=1.0.5,<2
 # 30s previews in the results list (`flet_audio.Audio`): the import is optional
 # so a checkout without it still runs, but rows then play nothing.
-flet-audio>=1.0,<2
+flet-audio>=1.0.5,<2
 
-# Engine: extractor fixes land constantly, so leave this unpinned and update often.
-yt-dlp
+# Engine: extractor fixes land constantly, so keep the range open. The floor is
+# what matters: every older release is a known extraction bug with a CVE behind
+# it, and none of them warns before it fails.
+yt-dlp>=2026.10.21
 
 # Tags and cover art: yt-dlp writes the picture into flac files with this (mp3
 # and m4a go through ffmpeg), and `metadata.py` imports it to write the tags a
 # music database gave us. Without it a flac download fails outright.
-mutagen
+mutagen>=1.48.1
 
 # Optional fallback: ships a static ffmpeg binary, used only when `ffmpeg`
 # is not on PATH. Drop this line if your system already has ffmpeg.
-imageio-ffmpeg>=0.6
+imageio-ffmpeg>=0.6.0
 
 # Not installed here: `av` and `pillow`, which convert audio in-process when
 # there is no ffmpeg binary at all - the Android build's own path (see

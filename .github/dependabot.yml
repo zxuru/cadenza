@@ -1,0 +1,57 @@
+version: 2
+
+# Las dependencias y las acciones, al día sin que nadie se acuerde.
+#
+# Cadenza no tenía bot de dependencias: las versiones se movían a mano en tres
+# archivos —requirements.txt, requirements-dev.txt y pyproject.toml— y ninguna
+# de las tres se enteraba de un aviso de seguridad. Dependabot no necesita token
+# ni workflow: viene con el repositorio.
+#
+# El rango abierto de yt-dlp (`>=2026.10.21`) es a propósito: los extractores se
+# rompen cada semana. Dependabot abrirá un PR por cada versión nueva y el CI lo
+# prueba; el suelo es lo que no se puede perder.
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Santiago
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      # Un PR por grupo y no uno por dependencia: el ruido es lo que hace que al
+      # final nadie los mire.
+      flet:
+        patterns:
+          - 'flet'
+          - 'flet-*'
+      motor:
+        patterns:
+          - 'yt-dlp'
+          - 'mutagen'
+          - 'imageio-ffmpeg'
+      herramientas:
+        patterns:
+          - 'pytest'
+          - 'ruff'
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Santiago
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      # Las acciones van fijadas por SHA: este es el que reescribe el SHA y el
+      # comentario de versión.
+      acciones:
+        patterns:
+          - '*'
