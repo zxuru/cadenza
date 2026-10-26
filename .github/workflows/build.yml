@@ -36,7 +36,7 @@ jobs:
       build: ${{ steps.number.outputs.build }}
       publish: ${{ steps.number.outputs.publish }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The patch is the run number, which only grows: no two builds of the
       # same base version are ordered randomly, which is what the app's
@@ -70,9 +70,9 @@ jobs:
     name: checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
 
@@ -106,9 +106,9 @@ jobs:
           - { name: macos-arm64, os: macos-latest, asset: macos-arm64.zip }
           - { name: macos-x86_64, os: macos-15-intel, asset: macos-x86_64.zip }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
 
@@ -183,7 +183,7 @@ jobs:
               ;;
           esac
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: Cadenza-${{ needs.version.outputs.version }}-${{ matrix.asset }}
@@ -193,9 +193,9 @@ jobs:
     needs: [version, checks]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
 
@@ -206,7 +206,7 @@ jobs:
       # so the previous toolchain is the one to start from and only a real change
       # to it costs the download: a cold toolchain turns every run into the first
       # one this build has ever had.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/flutter
@@ -264,7 +264,7 @@ jobs:
           done
           ls -l build/apk/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: android-apk
           # `flet build` names them `cadenza-<abi>.apk`, which is what the
@@ -287,7 +287,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 
