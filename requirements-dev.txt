@@ -1,7 +1,11 @@
 # Tools the tests and CI need and the app does not: the runtime dependencies
 # are in requirements.txt, and `pip install -r requirements-dev.txt` is what
 # makes `pytest` and the `ruff check .` of the CI job run.
-pytest>=8
+pytest>=9.1.1
 # The linter: the pyflakes rules (see `[tool.ruff.lint]` in pyproject.toml) are
 # what catch a name nothing defines before a release is built around it.
-ruff>=0.17
+ruff>=0.17.2
+# El test de la configuración de Dependabot lee su YAML: sin esto, el propio test
+# se salta y la comprobación de que el bot cubre los tres archivos de
+# dependencias deja de existir sin que nadie lo note.
+pyyaml==6.0.3

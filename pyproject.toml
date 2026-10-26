@@ -17,10 +17,10 @@ license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
-    "flet>=1.0,<2",
-    "flet-audio>=1.0,<2",
-    "yt-dlp",
-    "mutagen",
+    "flet>=1.0.5,<2",
+    "flet-audio>=1.0.5,<2",
+    "yt-dlp>=2026.10.21",
+    "mutagen>=1.48.1",
 ]
 
 [tool.flet]
