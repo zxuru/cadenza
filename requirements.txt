@@ -21,7 +21,7 @@ mutagen>=1.48.1
 
 # Optional fallback: ships a static ffmpeg binary, used only when `ffmpeg`
 # is not on PATH. Drop this line if your system already has ffmpeg.
-imageio-ffmpeg>=0.6.0
+imageio-ffmpeg>=0.7.0
 
 # Not installed here: `av` and `pillow`, which convert audio in-process when
 # there is no ffmpeg binary at all - the Android build's own path (see
